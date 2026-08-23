@@ -284,9 +284,9 @@ button, .btn, .btn-small, input, select {
 .hero-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
 .join-code-form { display: flex; gap: 8px; }
 .join-code-form input {
-  width: 170px;
+  width: 210px;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.02em;
 }
 @media (max-width: 480px) {
   .hero-actions { flex-direction: column; align-items: stretch; }
