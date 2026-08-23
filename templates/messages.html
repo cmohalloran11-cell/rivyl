@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Chat &mdash; {{ league['name'] }}{% endblock %}
+{% block league_nav %}{{ macros.league_tabs(league, my_team_id, 'messages') }}{% endblock %}
+{% block content %}
+  <h1>League Chat</h1>
+  <p class="subtitle">Messages and league activity &mdash; adds, drops, and trades all land here too.</p>
+
+  {% if my_team_id %}
+    <div class="card">
+      <form method="post" action="{{ url_for('league_messages', league_id=league['id']) }}" class="form-row" style="gap:10px;">
+        <input type="text" name="body" placeholder="Say something to the league..." maxlength="1000" required style="flex:1;">
+        <button class="btn btn-small" type="submit" style="align-self:flex-start;">Send</button>
+      </form>
+    </div>
+  {% else %}
+    <p class="empty-state">Join this league to post a message.</p>
+  {% endif %}
+
+  <div class="message-feed">
+    {% for entry in feed %}
+      {% if entry['type'] == 'message' %}
+        <div class="card message-row">
+          <div class="cell-flex">
+            {% if entry['team'] %}{{ macros.team_logo(entry['team']) }}{% endif %}
+            <strong>{{ entry['team']['team_name'] if entry['team'] else 'Unknown' }}</strong>
+            <span class="hint" style="margin:0;">{{ entry['created_at'][:16] }}</span>
+          </div>
+          <p class="message-body">{{ entry['body'] }}</p>
+        </div>
+      {% else %}
+        <div class="message-row message-row-tx">
+          <span class="hint" style="margin:0;">{{ entry['created_at'][:16] }}</span>
+          <span class="cell-flex" style="margin:0;">
+            {% if entry['team'] %}{{ macros.team_logo(entry['team']) }}{% endif %}
+            <strong>{{ entry['team']['team_name'] if entry['team'] else 'League' }}</strong>
+            <span class="hint" style="margin:0;">{{ entry['detail'] }}</span>
+          </span>
+        </div>
+      {% endif %}
+    {% else %}
+      <p class="empty-state">No activity yet &mdash; be the first to say something.</p>
+    {% endfor %}
+  </div>
+{% endblock %}

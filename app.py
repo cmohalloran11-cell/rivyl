@@ -481,6 +481,14 @@ def init_db():
             detail TEXT NOT NULL,
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
+
+        CREATE TABLE IF NOT EXISTS messages (
+            id SERIAL PRIMARY KEY,
+            league_id INTEGER NOT NULL REFERENCES leagues(id) ON DELETE CASCADE,
+            team_id INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+            body TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
         """
     )
 
@@ -1247,6 +1255,7 @@ def home_page(league_id):
         if league["draft_status"] == "complete":
             ensure_schedule(db, league_id)
             sync_week_scoring(db, league_id, league["current_week"])
+            ensure_ai_teams_optimal(db, league_id)
             maybe_ai_roster_moves(db, league_id)
             maybe_ai_trade_offers(db, league_id)
 
@@ -1328,6 +1337,7 @@ def league_home(league_id):
     if league["draft_status"] == "complete":
         ensure_schedule(db, league_id)
         sync_week_scoring(db, league_id, league["current_week"])
+        ensure_ai_teams_optimal(db, league_id)
         maybe_ai_roster_moves(db, league_id)
         maybe_ai_trade_offers(db, league_id)
         recent_moves = db.execute(
@@ -1549,6 +1559,27 @@ def customize_team(league_id, team_id):
         db.execute("UPDATE teams SET team_name = ? WHERE id = ?", (team_name, team_id))
     db.commit()
     flash("Team updated.")
+    return redirect(url_for("team_detail", league_id=league_id, team_id=team_id))
+
+
+@app.route("/leagues/<int:league_id>/team/<int:team_id>/optimize-lineup", methods=["POST"])
+def optimize_lineup(league_id, team_id):
+    db = get_db()
+    league = db.execute("SELECT * FROM leagues WHERE id = ?", (league_id,)).fetchone()
+    if league is None:
+        return redirect(url_for("index"))
+    if league["draft_status"] not in ("in_progress", "complete"):
+        return redirect(url_for("team_detail", league_id=league_id, team_id=team_id))
+
+    teams = db.execute(
+        "SELECT * FROM teams WHERE league_id = ? ORDER BY slot_index", (league_id,)
+    ).fetchall()
+    if get_my_team_id(league_id, teams) != team_id:
+        flash("You can only set your own lineup.")
+        return redirect(url_for("team_detail", league_id=league_id, team_id=team_id))
+
+    set_optimal_lineup(db, league_id, team_id)
+    flash("Set your best possible starting lineup.")
     return redirect(url_for("team_detail", league_id=league_id, team_id=team_id))
 
 
@@ -1881,6 +1912,7 @@ def matchup_detail(league_id):
     if league["draft_status"] == "complete":
         ensure_schedule(db, league_id)
         sync_week_scoring(db, league_id, league["current_week"])
+        ensure_ai_teams_optimal(db, league_id)
         week_status = get_week_status(db, league["current_week"])
         week_matchups = db.execute(
             "SELECT * FROM matchups WHERE league_id = ? AND week = ? ORDER BY id",
@@ -1971,6 +2003,7 @@ def _knockout_matchup_view(db, league, teams, my_team_id):
     if league["draft_status"] == "complete" and left is not None:
         ensure_schedule(db, league_id)
         sync_week_scoring(db, league_id, league["current_week"])
+        ensure_ai_teams_optimal(db, league_id)
         week_status = get_week_status(db, league["current_week"])
 
         knockout_alive, knockout_eliminated = get_knockout_standings(db, league_id)
@@ -2086,6 +2119,60 @@ def players_list(league_id):
         search_query=search_query,
         own_filter=own_filter,
         my_team_id=get_my_team_id(league_id, teams),
+    )
+
+
+@app.route("/leagues/<int:league_id>/messages", methods=["GET", "POST"])
+def league_messages(league_id):
+    db = get_db()
+    league = db.execute("SELECT * FROM leagues WHERE id = ?", (league_id,)).fetchone()
+    if league is None:
+        flash("League not found.")
+        return redirect(url_for("index"))
+
+    teams = db.execute(
+        "SELECT * FROM teams WHERE league_id = ? ORDER BY slot_index", (league_id,)
+    ).fetchall()
+    my_team_id = get_my_team_id(league_id, teams)
+
+    if request.method == "POST":
+        if my_team_id is None:
+            flash("Join this league to post a message.")
+            return redirect(url_for("league_messages", league_id=league_id))
+        body = request.form.get("body", "").strip()[:1000]
+        if not body:
+            flash("Message can't be empty.")
+            return redirect(url_for("league_messages", league_id=league_id))
+        db.execute(
+            "INSERT INTO messages (league_id, team_id, body) VALUES (?, ?, ?)",
+            (league_id, my_team_id, body),
+        )
+        db.commit()
+        return redirect(url_for("league_messages", league_id=league_id))
+
+    teams_by_id = {t["id"]: t for t in teams}
+    msg_rows = db.execute(
+        "SELECT * FROM messages WHERE league_id = ? ORDER BY id DESC LIMIT 150", (league_id,)
+    ).fetchall()
+    tx_rows = db.execute(
+        "SELECT * FROM transactions WHERE league_id = ? ORDER BY id DESC LIMIT 150", (league_id,)
+    ).fetchall()
+
+    feed = []
+    for m in msg_rows:
+        feed.append({
+            "type": "message", "created_at": m["created_at"],
+            "team": teams_by_id.get(m["team_id"]), "body": m["body"],
+        })
+    for t in tx_rows:
+        feed.append({
+            "type": "transaction", "created_at": t["created_at"],
+            "team": teams_by_id.get(t["team_id"]), "detail": t["detail"], "kind": t["kind"],
+        })
+    feed.sort(key=lambda e: e["created_at"], reverse=True)
+
+    return render_template(
+        "messages.html", league=league, feed=feed[:150], my_team_id=my_team_id,
     )
 
 
@@ -2660,6 +2747,61 @@ def execute_roster_move(db, league, team_row, add_player_id=None, drop_pick_id=N
     return True, detail
 
 
+def ensure_ai_teams_optimal(db, league_id):
+    """AI teams should always have a full required roster and their best
+    possible starting lineup -- there's no one to click 'Generate Best
+    Lineup' for them, so this runs on every relevant page view. Also
+    backfills K/DEF/etc. for AI teams that drafted before roster minimums
+    were enforced, self-healing older leagues instead of just new ones."""
+    league = db.execute("SELECT * FROM leagues WHERE id = ?", (league_id,)).fetchone()
+    if league is None or league["draft_status"] != "complete":
+        return
+
+    ai_teams = db.execute(
+        "SELECT * FROM teams WHERE league_id = ? AND owner_type = 'ai' AND status = 'filled'",
+        (league_id,),
+    ).fetchall()
+    if not ai_teams:
+        return
+
+    for team in ai_teams:
+        picks = get_roster_picks(db, league_id, team["id"])
+        counts = {}
+        for p in picks:
+            counts[p["position"]] = counts.get(p["position"], 0) + 1
+        missing = [pos for pos, need in STARTER_REQUIREMENTS.items() if counts.get(pos, 0) < need]
+        if not missing:
+            continue
+
+        available = get_available_players(db, league_id, league["scoring"])
+        for pos in missing:
+            best = next((p for p in available if p["position"] == pos), None)
+            if best is None:
+                continue
+
+            # A full roster (the common case for older leagues drafted
+            # before this was enforced) needs something dropped to make
+            # room -- cut the weakest bench player rather than skip the
+            # required position entirely.
+            current_picks = get_roster_picks(db, league_id, team["id"])
+            drop_id = None
+            if len(current_picks) >= league["rounds"]:
+                bench = [p for p in current_picks if p["lineup_slot"] in (None, "BN")]
+                if not bench:
+                    continue
+                worst = max(bench, key=lambda p: (p["player_rank"] is None, p["player_rank"] or 0))
+                drop_id = worst["id"]
+
+            execute_roster_move(
+                db, league, team, add_player_id=best["id"], drop_pick_id=drop_id,
+                note=f"Waiver pickup — filling required {pos} slot.",
+            )
+            available = [p for p in available if p["id"] != best["id"]]
+
+    for team in ai_teams:
+        set_optimal_lineup(db, league_id, team["id"])
+
+
 def maybe_ai_roster_moves(db, league_id):
     """Lets AI teams work the waiver wire, same as a human would on the
     Players page -- periodic, capped at one move per team per pass, and only
@@ -3126,9 +3268,11 @@ def get_week_status(db, week):
     return "scheduled"
 
 
-def ensure_lineup_slots(db, league_id, team_id):
-    """First-time roster lineup assignment (best rank fills starters). A no-op
-    once slots exist, so it never clobbers a user's manual drag-and-drop swaps."""
+def set_optimal_lineup(db, league_id, team_id):
+    """(Re)assigns the best possible starting lineup from a team's current
+    roster, best-rank-first per required slot then FLEX from what's left --
+    always recomputes, unlike ensure_lineup_slots. Used by the AI
+    auto-optimizer and the human 'Generate Best Lineup' button."""
     picks = db.execute(
         """
         SELECT * FROM draft_picks
@@ -3137,7 +3281,7 @@ def ensure_lineup_slots(db, league_id, team_id):
         """,
         (league_id, team_id),
     ).fetchall()
-    if not picks or not all(p["lineup_slot"] is None for p in picks):
+    if not picks:
         return
 
     remaining = list(picks)
@@ -3164,6 +3308,18 @@ def ensure_lineup_slots(db, league_id, team_id):
         [(slot, pid) for pid, slot in assignments],
     )
     db.commit()
+
+
+def ensure_lineup_slots(db, league_id, team_id):
+    """First-time roster lineup assignment. A no-op once slots exist, so it
+    never clobbers a user's manual drag-and-drop swaps."""
+    picks = db.execute(
+        "SELECT lineup_slot FROM draft_picks WHERE league_id = ? AND team_id = ? AND player_id IS NOT NULL",
+        (league_id, team_id),
+    ).fetchall()
+    if not picks or not all(p["lineup_slot"] is None for p in picks):
+        return
+    set_optimal_lineup(db, league_id, team_id)
 
 
 def build_lineup(db, league_id, team_id):

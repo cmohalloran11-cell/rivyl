@@ -119,6 +119,10 @@
       <div class="quick-link-title">🤝 Trades</div>
       <div class="quick-link-desc">Propose and manage trades</div>
     </a>
+    <a class="card quick-link-card" href="{{ url_for('league_messages', league_id=league['id']) }}">
+      <div class="quick-link-title">💬 Chat</div>
+      <div class="quick-link-desc">League messages and activity</div>
+    </a>
     <a class="card quick-link-card" href="{{ url_for('league_home', league_id=league['id']) }}">
       <div class="quick-link-title">🏆 League</div>
       <div class="quick-link-desc">Standings and league settings</div>

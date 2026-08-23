@@ -70,7 +70,12 @@
 
   {% if starters or bench %}
     {% if is_my_team %}
-      <p class="hint drag-hint">Drag a player onto another row to swap it, or onto an empty slot to move it there.</p>
+      <div class="cell-flex" style="margin-bottom:10px;">
+        <p class="hint drag-hint" style="margin:0;">Drag a player onto another row to swap it, or onto an empty slot to move it there.</p>
+        <form method="post" action="{{ url_for('optimize_lineup', league_id=league['id'], team_id=team['id']) }}">
+          <button class="btn btn-secondary btn-small" type="submit">✨ Generate Best Lineup</button>
+        </form>
+      </div>
     {% endif %}
 
     <h2 class="section-title">Starting Lineup</h2>

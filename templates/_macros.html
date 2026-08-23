@@ -10,6 +10,8 @@
      href="{{ url_for('players_list', league_id=league['id']) }}"><span class="league-tab-icon">👥</span> Players</a>
   <a class="league-tab {% if active == 'trades' %}league-tab-active{% endif %}"
      href="{{ url_for('trades_page', league_id=league['id']) }}"><span class="league-tab-icon">🤝</span> Trades</a>
+  <a class="league-tab {% if active == 'messages' %}league-tab-active{% endif %}"
+     href="{{ url_for('league_messages', league_id=league['id']) }}"><span class="league-tab-icon">💬</span> Chat</a>
   <a class="league-tab {% if active == 'league' %}league-tab-active{% endif %}"
      href="{{ url_for('league_home', league_id=league['id']) }}"><span class="league-tab-icon">🏆</span> League</a>
 </nav>
