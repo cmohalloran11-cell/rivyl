@@ -7,6 +7,8 @@
   };
   const NEED_TARGETS = { QB: 3, RB: 6, WR: 7, TE: 3, K: 1, DEF: 1 };
   const ROSTER_POSITION_ORDER = ['QB', 'RB', 'WR', 'TE', 'K', 'DEF'];
+  const STARTER_REQUIREMENTS = { QB: 1, RB: 2, WR: 2, TE: 1, K: 1, DEF: 1 };
+  const FLEX_ELIGIBLE = ['RB', 'WR'];
   const REVEAL_PAUSE_MS = 260;
   const ROUND_TRANSITION_MS = 900;
 
@@ -16,6 +18,7 @@
   let filterQuery = '';
   let lastRenderedRound = state.on_the_clock ? state.on_the_clock.round : null;
   let busy = false;
+  let activeSubtab = 'players';
 
   const el = {
     roundHeader: document.getElementById('draft-round-header'),
@@ -29,7 +32,48 @@
     roundTransition: document.getElementById('round-transition'),
     completionOverlay: document.getElementById('completion-overlay'),
     gradesContent: document.getElementById('grades-content'),
+    subtabs: document.getElementById('draft-subtabs'),
+    playersPanel: document.getElementById('players-panel'),
+    queuePanel: document.getElementById('queue-panel'),
+    lineupPanel: document.getElementById('lineup-panel'),
+    queueBody: document.getElementById('queue-body'),
+    queueCount: document.getElementById('queue-count'),
+    lineupBody: document.getElementById('lineup-body'),
   };
+
+  // ---- draft queue (client-side only -- personal to this browser) --------
+
+  const queueKey = `rivyl_draft_queue_${state.league.id}`;
+  let queue = [];
+  try {
+    queue = JSON.parse(localStorage.getItem(queueKey) || '[]');
+  } catch (e) {
+    queue = [];
+  }
+
+  function saveQueue() {
+    try {
+      localStorage.setItem(queueKey, JSON.stringify(queue));
+    } catch (e) { /* ignore (e.g. private browsing storage limits) */ }
+  }
+
+  function toggleQueue(playerId) {
+    const idx = queue.indexOf(playerId);
+    if (idx === -1) queue.push(playerId);
+    else queue.splice(idx, 1);
+    saveQueue();
+    renderPlayers();
+    renderQueue();
+  }
+
+  function moveInQueue(playerId, delta) {
+    const idx = queue.indexOf(playerId);
+    const newIdx = idx + delta;
+    if (idx === -1 || newIdx < 0 || newIdx >= queue.length) return;
+    [queue[idx], queue[newIdx]] = [queue[newIdx], queue[idx]];
+    saveQueue();
+    renderQueue();
+  }
 
   function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
@@ -184,9 +228,13 @@
     }
   }
 
-  function renderPlayers() {
-    const canPick = state.league.draft_status === 'in_progress' && state.on_the_clock
+  function canPickNow() {
+    return state.league.draft_status === 'in_progress' && state.on_the_clock
       && state.on_the_clock.owner_type === 'human' && state.on_the_clock.team_id === state.my_team_id;
+  }
+
+  function renderPlayers() {
+    const canPick = canPickNow();
     const q = filterQuery.trim().toLowerCase();
     const rows = state.available_players
       .filter((p) => (!filterPos || p.position === filterPos))
@@ -195,17 +243,111 @@
 
     el.playersBody.innerHTML = rows.map((p) => `
       <tr>
+        <td><button type="button" class="queue-star ${queue.includes(p.id) ? 'queued' : ''}" data-player="${p.id}" title="Queue this player">★</button></td>
         <td>${p.full_name}</td>
         <td><span class="badge badge-pos badge-pos-${p.position}">${p.position}</span></td>
         <td>${p.nfl_team || '—'}</td>
         <td>${p.search_rank < 999999 ? p.search_rank : '—'}</td>
         <td>${canPick ? `<button class="btn btn-small draft-btn" data-player="${p.id}">Draft</button>` : ''}</td>
       </tr>
-    `).join('') || `<tr><td colspan="5" class="row-open">No players match.</td></tr>`;
+    `).join('') || `<tr><td colspan="6" class="row-open">No players match.</td></tr>`;
 
     el.playersBody.querySelectorAll('.draft-btn').forEach((btn) => {
       btn.addEventListener('click', () => draftPlayer(btn.dataset.player));
     });
+    el.playersBody.querySelectorAll('.queue-star').forEach((btn) => {
+      btn.addEventListener('click', () => toggleQueue(btn.dataset.player));
+    });
+  }
+
+  function renderQueue() {
+    const availableIds = new Set(state.available_players.map((p) => p.id));
+    const pruned = queue.filter((id) => availableIds.has(id));
+    if (pruned.length !== queue.length) {
+      queue = pruned;
+      saveQueue();
+    }
+    el.queueCount.textContent = queue.length ? String(queue.length) : '';
+
+    const byId = {};
+    state.available_players.forEach((p) => { byId[p.id] = p; });
+    const canPick = canPickNow();
+
+    el.queueBody.innerHTML = queue.map((id, i) => {
+      const p = byId[id];
+      if (!p) return '';
+      return `
+        <tr>
+          <td>
+            <div class="queue-reorder">
+              <button type="button" data-move="up" data-player="${p.id}" ${i === 0 ? 'disabled' : ''}>&uarr;</button>
+              <button type="button" data-move="down" data-player="${p.id}" ${i === queue.length - 1 ? 'disabled' : ''}>&darr;</button>
+            </div>
+          </td>
+          <td>${p.full_name}</td>
+          <td><span class="badge badge-pos badge-pos-${p.position}">${p.position}</span></td>
+          <td>${p.nfl_team || '—'}</td>
+          <td>${p.search_rank < 999999 ? p.search_rank : '—'}</td>
+          <td>
+            ${canPick ? `<button class="btn btn-small draft-btn" data-player="${p.id}">Draft</button>` : ''}
+            <button type="button" class="queue-star queued" data-player="${p.id}" title="Remove from queue">★</button>
+          </td>
+        </tr>`;
+    }).join('') || `<tr><td colspan="6" class="row-open">No players queued yet &mdash; star players on the Players tab.</td></tr>`;
+
+    el.queueBody.querySelectorAll('.draft-btn').forEach((btn) => {
+      btn.addEventListener('click', () => draftPlayer(btn.dataset.player));
+    });
+    el.queueBody.querySelectorAll('.queue-star').forEach((btn) => {
+      btn.addEventListener('click', () => toggleQueue(btn.dataset.player));
+    });
+    el.queueBody.querySelectorAll('[data-move]').forEach((btn) => {
+      btn.addEventListener('click', () => moveInQueue(btn.dataset.player, btn.dataset.move === 'up' ? -1 : 1));
+    });
+  }
+
+  function renderLineup() {
+    const team = state.teams.find((t) => t.id === state.my_team_id);
+    if (!team) {
+      el.lineupBody.innerHTML = `<tr><td colspan="4" class="row-open">No team found.</td></tr>`;
+      return;
+    }
+    const remaining = team.roster.slice().sort((a, b) => {
+      const ar = a.player_rank == null ? 999999 : a.player_rank;
+      const br = b.player_rank == null ? 999999 : b.player_rank;
+      return ar - br;
+    });
+    const slots = [];
+
+    Object.keys(STARTER_REQUIREMENTS).forEach((pos) => {
+      const count = STARTER_REQUIREMENTS[pos];
+      for (let i = 0; i < count; i++) {
+        const idx = remaining.findIndex((p) => p.position === pos);
+        const pick = idx === -1 ? null : remaining.splice(idx, 1)[0];
+        slots.push({ slot: count === 1 ? pos : `${pos}${i + 1}`, pick });
+      }
+    });
+    const flexIdx = remaining.findIndex((p) => FLEX_ELIGIBLE.includes(p.position));
+    slots.push({ slot: 'FLEX', pick: flexIdx === -1 ? null : remaining.splice(flexIdx, 1)[0] });
+
+    const benchHtml = remaining.map((p) => `
+      <tr>
+        <td><span class="badge badge-pos">BN</span></td>
+        <td>${p.player_name}</td>
+        <td><span class="badge badge-pos badge-pos-${p.position}">${p.position}</span></td>
+        <td>${p.nfl_team || '—'}</td>
+      </tr>`).join('');
+
+    const starterHtml = slots.map(({ slot, pick }) => `
+      <tr class="${pick ? '' : 'row-open'}">
+        <td><span class="badge badge-pos">${slot}</span></td>
+        ${pick
+          ? `<td>${pick.player_name}</td><td><span class="badge badge-pos badge-pos-${pick.position}">${pick.position}</span></td><td>${pick.nfl_team || '—'}</td>`
+          : `<td colspan="3" class="open-slot">Empty</td>`}
+      </tr>`).join('');
+
+    el.lineupBody.innerHTML = starterHtml + benchHtml
+      || `<tr><td colspan="4" class="row-open">No picks yet.</td></tr>`;
   }
 
   function renderTeams() {
@@ -269,6 +411,8 @@
     renderTicker();
     renderClock();
     renderPlayers();
+    renderQueue();
+    renderLineup();
     renderTeams();
 
     if (state.league.draft_status === 'complete') {
@@ -349,6 +493,21 @@
     render(state);
     tick();
   }
+
+  // ---- subtabs ----------------------------------------------------------
+
+  const SUBTAB_PANELS = { players: el.playersPanel, queue: el.queuePanel, lineup: el.lineupPanel };
+
+  el.subtabs.addEventListener('click', (e) => {
+    const btn = e.target.closest('.draft-subtab');
+    if (!btn) return;
+    activeSubtab = btn.dataset.subtab;
+    el.subtabs.querySelectorAll('.draft-subtab').forEach((b) => b.classList.remove('draft-subtab-active'));
+    btn.classList.add('draft-subtab-active');
+    Object.entries(SUBTAB_PANELS).forEach(([name, panel]) => {
+      panel.classList.toggle('hidden', name !== activeSubtab);
+    });
+  });
 
   // ---- filters --------------------------------------------------------
 

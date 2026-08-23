@@ -26,24 +26,54 @@
       </div>
 
       <div class="card">
-        <div class="filter-row">
-          <input type="text" id="player-search" placeholder="Search players...">
+        <div class="draft-subtabs" id="draft-subtabs">
+          <button type="button" class="draft-subtab draft-subtab-active" data-subtab="players">Players</button>
+          <button type="button" class="draft-subtab" data-subtab="queue">Queue <span id="queue-count" class="draft-subtab-count"></span></button>
+          <button type="button" class="draft-subtab" data-subtab="lineup">Lineup</button>
         </div>
-        <div class="pos-tabs" id="pos-tabs">
-          <a class="pos-tab pos-tab-active" data-pos="">All</a>
-          <a class="pos-tab" data-pos="QB">QB</a>
-          <a class="pos-tab" data-pos="RB">RB</a>
-          <a class="pos-tab" data-pos="WR">WR</a>
-          <a class="pos-tab" data-pos="TE">TE</a>
-          <a class="pos-tab" data-pos="K">K</a>
-          <a class="pos-tab" data-pos="DEF">DEF</a>
+
+        <div id="players-panel">
+          <div class="filter-row">
+            <input type="text" id="player-search" placeholder="Search players...">
+          </div>
+          <div class="pos-tabs" id="pos-tabs">
+            <a class="pos-tab pos-tab-active" data-pos="">All</a>
+            <a class="pos-tab" data-pos="QB">QB</a>
+            <a class="pos-tab" data-pos="RB">RB</a>
+            <a class="pos-tab" data-pos="WR">WR</a>
+            <a class="pos-tab" data-pos="TE">TE</a>
+            <a class="pos-tab" data-pos="K">K</a>
+            <a class="pos-tab" data-pos="DEF">DEF</a>
+          </div>
+          <div class="player-table-wrap">
+            <table class="teams-table">
+              <thead>
+                <tr><th></th><th>Player</th><th>Pos</th><th>Team</th><th>Rank</th><th></th></tr>
+              </thead>
+              <tbody id="players-body"></tbody>
+            </table>
+          </div>
         </div>
-        <div class="player-table-wrap">
+
+        <div id="queue-panel" class="hidden">
+          <p class="hint drag-hint">Star players from the Players tab to queue them up &mdash; drafted players drop off automatically.</p>
+          <div class="player-table-wrap">
+            <table class="teams-table">
+              <thead>
+                <tr><th></th><th>Player</th><th>Pos</th><th>Team</th><th>Rank</th><th></th></tr>
+              </thead>
+              <tbody id="queue-body"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div id="lineup-panel" class="hidden">
+          <p class="hint drag-hint">A live preview of how your starting lineup is shaping up &mdash; final slots get set after the draft.</p>
           <table class="teams-table">
             <thead>
-              <tr><th>Player</th><th>Pos</th><th>Team</th><th>Rank</th><th></th></tr>
+              <tr><th>Slot</th><th>Player</th><th>Pos</th><th>Team</th></tr>
             </thead>
-            <tbody id="players-body"></tbody>
+            <tbody id="lineup-body"></tbody>
           </table>
         </div>
       </div>
