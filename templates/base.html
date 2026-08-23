@@ -16,7 +16,13 @@
       <img class="brand-mark" src="{{ url_for('static', filename='logo.png') }}" alt="" aria-hidden="true">
       RIVYL
     </a>
-    <a class="btn btn-small" href="{{ url_for('new_league') }}">+ Create League</a>
+    <div class="topbar-actions">
+      <a class="btn btn-small" href="{{ url_for('new_league') }}">+ Create League</a>
+      <form method="post" action="{{ url_for('logout') }}"
+            onsubmit="return confirm('Log out of every team on this browser? Anyone using this device afterward will need to rejoin.');">
+        <button class="btn btn-small btn-secondary" type="submit">Log out</button>
+      </form>
+    </div>
   </header>
 
   {% block league_nav %}{% endblock %}

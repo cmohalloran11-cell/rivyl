@@ -130,6 +130,12 @@ button, .btn, .btn-small, input, select {
   z-index: 40;
 }
 
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
 .brand {
   color: var(--text);
   text-decoration: none;

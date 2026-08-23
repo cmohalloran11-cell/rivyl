@@ -1233,6 +1233,21 @@ def index():
     return render_template("index.html", leagues=leagues, deletable_ids=deletable_ids)
 
 
+@app.route("/logout", methods=["POST"])
+def logout():
+    # There's no login/password -- "being" a team is just this browser's
+    # session cookie remembering which team_id you claimed in each league.
+    # That means anyone using the same browser afterward (a shared computer,
+    # a borrowed phone) silently inherits every team that session is bound
+    # to, with no way to tell or back out. Wiping the whole session here is
+    # the escape hatch: it forgets every team in every league for this
+    # browser, so a fresh visitor (or the real owner, next time) starts
+    # clean and has to rejoin/re-claim explicitly.
+    session.clear()
+    flash("Logged out of all teams on this browser.")
+    return redirect(url_for("index"))
+
+
 @app.route("/leagues/new", methods=["GET", "POST"])
 def new_league():
     if request.method == "GET":
