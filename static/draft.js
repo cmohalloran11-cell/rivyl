@@ -80,6 +80,43 @@
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
+  // ---- on-the-clock sound ------------------------------------------------
+  // Synthesized with the Web Audio API (no audio file to host) -- a short
+  // two-note chime that plays once, right when it becomes this device's
+  // turn to pick.
+
+  let audioCtx = null;
+  let wasMyTurn = false;
+
+  function warmUpAudio() {
+    if (audioCtx) return;
+    try {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    } catch (e) { /* Web Audio unsupported -- sound just won't play */ }
+  }
+  document.addEventListener('click', warmUpAudio, { once: true });
+
+  function playOnClockChime() {
+    warmUpAudio();
+    if (!audioCtx) return;
+    if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
+    const now = audioCtx.currentTime;
+    [660, 880].forEach((freq, i) => {
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = freq;
+      const start = now + i * 0.14;
+      gain.gain.setValueAtTime(0, start);
+      gain.gain.linearRampToValueAtTime(0.25, start + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.001, start + 0.32);
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.start(start);
+      osc.stop(start + 0.34);
+    });
+  }
+
   async function fetchJSON(url, opts) {
     const res = await fetch(url, opts);
     return res.json();
@@ -417,6 +454,10 @@
   }
 
   function render(newState) {
+    const isMyTurnNow = !!(newState.on_the_clock && newState.on_the_clock.owner_type === 'human' && newState.on_the_clock.team_id === newState.my_team_id);
+    if (isMyTurnNow && !wasMyTurn) playOnClockChime();
+    wasMyTurn = isMyTurnNow;
+
     state = newState;
     renderHeader();
     renderTicker();
@@ -450,7 +491,7 @@
 
   function pollDraftClock(watchOverallPick) {
     stopPolling();
-    pollInterval = setInterval(async () => {
+    async function pollOnce() {
       // POST to /draft/advance every second, whether the current pick is an
       // AI's or a human's -- the server decides what happens (pace + execute
       // the AI pick once its "ready at" time passes, or auto-draft a human
@@ -473,8 +514,23 @@
         return;
       }
       state.remaining_seconds = s.remaining_seconds;
-    }, 1000);
+    }
+    // Fire the first check immediately rather than waiting a full second --
+    // matters most right after a tab was hidden (see visibilitychange below),
+    // where waiting for the next throttled interval tick could add a long,
+    // unpredictable delay on top of whatever was already missed.
+    pollOnce();
+    pollInterval = setInterval(pollOnce, 1000);
   }
+
+  // Browsers throttle setInterval timers in hidden/backgrounded tabs (down to
+  // roughly once a minute after a while), so a tab left in the background
+  // during an AI's turn -- or a human's own turn -- can fall far behind the
+  // server's actual pace. Force an immediate resync the moment the tab is
+  // looked at again instead of waiting on a throttled timer to catch up.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') tick();
+  });
 
   async function draftPlayer(playerId) {
     stopPolling();
