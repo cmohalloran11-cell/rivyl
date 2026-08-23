@@ -2346,6 +2346,25 @@ def build_reasoning(team, personality, player, need_bonus, current_round, is_aut
     return f"{label} is {flavor} — {player['full_name']} {need_phrase} (rank #{player['rank']})."
 
 
+def get_forced_positions(position_counts, current_round, total_rounds):
+    """Every roster must hit STARTER_REQUIREMENTS (1 QB, 2 RB, 2 WR, 1 TE,
+    1 K, 1 DEF) by the end of the draft. Once a team is down to exactly as
+    many picks as unmet requirements, every remaining pick has to go toward
+    one of them -- otherwise there'd be no room left to fill the minimums.
+    Returns the set of positions still owed, or None if there's slack left."""
+    deficits = {
+        pos: max(0, need - position_counts.get(pos, 0))
+        for pos, need in STARTER_REQUIREMENTS.items()
+    }
+    total_deficit = sum(deficits.values())
+    if total_deficit == 0:
+        return None
+    remaining_picks = total_rounds - current_round + 1
+    if total_deficit >= remaining_picks:
+        return {pos for pos, d in deficits.items() if d > 0}
+    return None
+
+
 def execute_pick_for_team(db, league_id, pick_row, team_row, scoring, personality=None, is_autopick=False):
     available = get_available_players(db, league_id, scoring)
     if not available:
@@ -2360,6 +2379,12 @@ def execute_pick_for_team(db, league_id, pick_row, team_row, scoring, personalit
         if position_counts.get(p["position"], 0) < HARD_CAP.get(p["position"], 99)
     ]
     pool = within_cap or available
+
+    total_rounds = db.execute("SELECT rounds FROM leagues WHERE id = ?", (league_id,)).fetchone()["rounds"]
+    forced = get_forced_positions(position_counts, pick_row["round"], total_rounds)
+    if forced:
+        forced_pool = [p for p in pool if p["position"] in forced]
+        pool = forced_pool or pool
 
     available_counts = {}
     for p in pool:
@@ -3276,6 +3301,7 @@ def build_state(league_id):
 
     on_the_clock = None
     remaining_seconds = None
+    forced_positions = None
     available_players = []
     if league["draft_status"] == "in_progress":
         on_clock_row = get_current_pick_row(db, league_id, league["current_pick_index"])
@@ -3283,6 +3309,9 @@ def build_state(league_id):
             on_the_clock = serialize_pick(on_clock_row)
             if on_clock_row["owner_type"] == "human" and league["pick_deadline"]:
                 remaining_seconds = max(0, round(league["pick_deadline"] - time.time()))
+            on_clock_counts = get_position_counts(db, league_id, on_clock_row["team_id"])
+            forced = get_forced_positions(on_clock_counts, on_clock_row["round"], league["rounds"])
+            forced_positions = sorted(forced) if forced else None
         available_players = [
             {
                 "id": p["id"], "full_name": p["full_name"], "position": p["position"],
@@ -3304,6 +3333,7 @@ def build_state(league_id):
         "my_team_id": get_my_team_id(league_id, teams_rows),
         "on_the_clock": on_the_clock,
         "remaining_seconds": remaining_seconds,
+        "forced_positions": forced_positions,
         "picks": picks,
         "teams": teams,
         "available_players": available_players,
@@ -3465,6 +3495,16 @@ def draft_pick(league_id):
 
     if player is None:
         return jsonify({"error": "unavailable", **build_state(league_id)}), 409
+
+    position_counts = get_position_counts(db, league_id, pick_row["team_id"])
+    forced = get_forced_positions(position_counts, pick_row["round"], league["rounds"])
+    if forced and player["position"] not in forced:
+        needed = ", ".join(sorted(forced))
+        return jsonify({
+            "error": "position_required",
+            "message": f"You need to draft a {needed} here — not enough picks left to fill your roster minimums otherwise.",
+            **build_state(league_id),
+        }), 400
 
     rank_col = RANK_COLUMN_BY_SCORING.get(league["scoring"], "rank_half")
     reasoning = f"{pick_row['owner_name'] or pick_row['team_name']} selects {player['full_name']} ({player['position']})."

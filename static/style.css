@@ -1058,6 +1058,17 @@ input:focus, select:focus {
 .human-timer.timer-low { color: var(--danger); animation: timer-pulse 0.6s infinite; }
 @keyframes timer-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
 
+.forced-positions-banner {
+  margin-top: 10px;
+  background: var(--warn-soft);
+  border: 1px solid var(--warn);
+  color: var(--warn);
+  font-size: 0.78rem;
+  font-weight: 700;
+  padding: 8px 10px;
+  border-radius: 8px;
+}
+
 .need-panel { margin-top: 14px; display: flex; flex-direction: column; gap: 5px; }
 .need-row { display: flex; align-items: center; gap: 8px; }
 .need-pos { font-size: 0.7rem; color: var(--text-dim); width: 28px; font-weight: 700; }

@@ -206,12 +206,18 @@
       <li>${pickCode(p.round, p.pick_in_round)} &mdash; ${ownerIcon(p.owner_type)} ${displayName(p)}</li>
     `).join('');
 
+    const forced = state.forced_positions;
+    const forcedHtml = forced && forced.length
+      ? `<div class="forced-positions-banner">Must draft ${forced.join(' or ')} here &mdash; no picks left to spare</div>`
+      : '';
+
     if (onClock.owner_type === 'ai') {
       el.clockContent.innerHTML = `
         <div class="invite-label">On the clock</div>
         <div class="clock-team">${ownerIcon('ai')} ${displayName(onClock).toUpperCase()}</div>
         <div class="hint">Round ${onClock.round}, Pick ${onClock.pick_in_round} (overall #${onClock.overall_pick})</div>
         <div class="thinking" id="thinking-indicator">picking<span class="dots"><span>.</span><span>.</span><span>.</span></span></div>
+        ${forcedHtml}
         ${team ? `<div class="need-panel">${needBars(team)}</div>` : ''}
         ${upNext.length ? `<div class="up-next"><div class="invite-label">Up next</div><ul>${upNextHtml}</ul></div>` : ''}
       `;
@@ -221,6 +227,7 @@
         <div class="clock-team">${ownerIcon('human')} ${displayName(onClock)}</div>
         <div class="hint">Round ${onClock.round}, Pick ${onClock.pick_in_round} (overall #${onClock.overall_pick})</div>
         ${isMe ? '<div class="human-timer" id="human-timer">--:--</div>' : '<div class="hint">Waiting for their pick&hellip;</div>'}
+        ${forcedHtml}
         ${team ? `<div class="need-panel">${needBars(team)}</div>` : ''}
         ${upNext.length ? `<div class="up-next"><div class="invite-label">Up next</div><ul>${upNextHtml}</ul></div>` : ''}
       `;
@@ -233,8 +240,13 @@
       && state.on_the_clock.owner_type === 'human' && state.on_the_clock.team_id === state.my_team_id;
   }
 
+  function canDraftPosition(pos) {
+    if (!canPickNow()) return false;
+    const forced = state.forced_positions;
+    return !forced || !forced.length || forced.includes(pos);
+  }
+
   function renderPlayers() {
-    const canPick = canPickNow();
     const q = filterQuery.trim().toLowerCase();
     const rows = state.available_players
       .filter((p) => (!filterPos || p.position === filterPos))
@@ -248,7 +260,7 @@
         <td><span class="badge badge-pos badge-pos-${p.position}">${p.position}</span></td>
         <td>${p.nfl_team || '—'}</td>
         <td>${p.search_rank < 999999 ? p.search_rank : '—'}</td>
-        <td>${canPick ? `<button class="btn btn-small draft-btn" data-player="${p.id}">Draft</button>` : ''}</td>
+        <td>${canDraftPosition(p.position) ? `<button class="btn btn-small draft-btn" data-player="${p.id}">Draft</button>` : ''}</td>
       </tr>
     `).join('') || `<tr><td colspan="6" class="row-open">No players match.</td></tr>`;
 
@@ -271,7 +283,6 @@
 
     const byId = {};
     state.available_players.forEach((p) => { byId[p.id] = p; });
-    const canPick = canPickNow();
 
     el.queueBody.innerHTML = queue.map((id, i) => {
       const p = byId[id];
@@ -289,7 +300,7 @@
           <td>${p.nfl_team || '—'}</td>
           <td>${p.search_rank < 999999 ? p.search_rank : '—'}</td>
           <td>
-            ${canPick ? `<button class="btn btn-small draft-btn" data-player="${p.id}">Draft</button>` : ''}
+            ${canDraftPosition(p.position) ? `<button class="btn btn-small draft-btn" data-player="${p.id}">Draft</button>` : ''}
             <button type="button" class="queue-star queued" data-player="${p.id}" title="Remove from queue">★</button>
           </td>
         </tr>`;
@@ -484,6 +495,7 @@
     const body = new URLSearchParams({ player_id: playerId });
     const newState = await fetchJSON(state.urls.pick, { method: 'POST', body });
     if (newState.error) {
+      if (newState.message) alert(newState.message);
       state = newState;
       render(state);
       return;
