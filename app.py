@@ -19,7 +19,19 @@ from flask import Flask, g, jsonify, redirect, render_template, request, session
 DATABASE_URL = os.environ.get("DATABASE_URL") or os.environ.get("POSTGRES_URL")
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-change-me")
+_SECRET_KEY = os.environ.get("SECRET_KEY")
+if not _SECRET_KEY:
+    if os.environ.get("VERCEL"):
+        # Session cookies are signed, not encrypted -- a hardcoded fallback
+        # secret in production would let anyone forge a cookie claiming to
+        # own any team in any league. Refuse to boot instead of doing that.
+        raise RuntimeError(
+            "SECRET_KEY environment variable is not set. Generate one "
+            "(e.g. `python -c \"import secrets; print(secrets.token_hex(32))\"`) "
+            "and set it in the Vercel project's Environment Variables."
+        )
+    _SECRET_KEY = "dev-secret-change-me"  # fine for local dev only
+app.secret_key = _SECRET_KEY
 
 _PLACEHOLDER_RE = re.compile(r"\?")
 
