@@ -55,6 +55,15 @@
     try {
       localStorage.setItem(queueKey, JSON.stringify(queue));
     } catch (e) { /* ignore (e.g. private browsing storage limits) */ }
+    // Mirror the queue server-side so a timeout auto-pick (which runs on the
+    // server, possibly with no client watching) can draft from it too.
+    if (state.urls && state.urls.queue) {
+      fetch(state.urls.queue, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ player_ids: queue }),
+      }).catch(() => { /* best-effort */ });
+    }
   }
 
   function toggleQueue(playerId) {
@@ -329,17 +338,21 @@
       return ar - br;
     });
     const slots = [];
+    const rosterConfig = state.league.roster_config || STARTER_REQUIREMENTS;
 
-    Object.keys(STARTER_REQUIREMENTS).forEach((pos) => {
-      const count = STARTER_REQUIREMENTS[pos];
+    ROSTER_POSITION_ORDER.forEach((pos) => {
+      const count = rosterConfig[pos] || 0;
       for (let i = 0; i < count; i++) {
         const idx = remaining.findIndex((p) => p.position === pos);
         const pick = idx === -1 ? null : remaining.splice(idx, 1)[0];
         slots.push({ slot: count === 1 ? pos : `${pos}${i + 1}`, pick });
       }
     });
-    const flexIdx = remaining.findIndex((p) => FLEX_ELIGIBLE.includes(p.position));
-    slots.push({ slot: 'FLEX', pick: flexIdx === -1 ? null : remaining.splice(flexIdx, 1)[0] });
+    const flexCount = rosterConfig.FLEX || 0;
+    for (let i = 0; i < flexCount; i++) {
+      const flexIdx = remaining.findIndex((p) => FLEX_ELIGIBLE.includes(p.position));
+      slots.push({ slot: flexCount === 1 ? 'FLEX' : `FLEX${i + 1}`, pick: flexIdx === -1 ? null : remaining.splice(flexIdx, 1)[0] });
+    }
 
     const benchHtml = remaining.map((p) => `
       <tr>
@@ -477,7 +490,12 @@
   function pollHumanTurn(watchOverallPick) {
     stopPolling();
     pollInterval = setInterval(async () => {
-      const s = await fetchJSON(state.urls.state);
+      // POST to /draft/advance rather than GET /draft/state: only the advance
+      // endpoint actually checks & enforces the pick deadline server-side.
+      // Every browser in the room polls here while waiting, so whichever one
+      // ticks past the deadline first is the one that triggers the auto-pick
+      // -- otherwise a stalled human pick could hang the draft forever.
+      const s = await fetchJSON(state.urls.advance, { method: 'POST' });
       if (s.league.draft_status !== 'in_progress' || !s.on_the_clock || s.on_the_clock.overall_pick !== watchOverallPick) {
         stopPolling();
         lastRenderedRound = s.on_the_clock ? s.on_the_clock.round : lastRenderedRound;

@@ -51,9 +51,42 @@
     </label>
     <p class="hint" id="format_hint"></p>
 
-    <label>Roster settings
-      <input type="text" name="roster_settings" placeholder="Standard (1QB/2RB/2WR/1TE/1FLEX/1DST/1K)">
-    </label>
+    <div class="roster-settings-block">
+      <span class="roster-settings-title">Roster settings</span>
+      <p class="hint">Tap &minus; / + to set starters at each position, plus your bench size.</p>
+      <div class="roster-stepper-grid" id="roster-stepper-grid">
+        {% for pos in position_order %}
+          <div class="roster-stepper-row" data-pos="{{ pos }}" data-max="{{ roster_slot_max }}">
+            <span class="roster-stepper-label">{{ pos }}</span>
+            <div class="roster-stepper-controls">
+              <button type="button" class="roster-stepper-btn" data-action="dec">&minus;</button>
+              <span class="roster-stepper-count">{{ default_roster_config[pos] }}</span>
+              <button type="button" class="roster-stepper-btn" data-action="inc">+</button>
+            </div>
+            <input type="hidden" name="pos_{{ pos }}" value="{{ default_roster_config[pos] }}">
+          </div>
+        {% endfor %}
+        <div class="roster-stepper-row" data-pos="FLEX" data-max="{{ roster_slot_max }}">
+          <span class="roster-stepper-label">FLEX</span>
+          <div class="roster-stepper-controls">
+            <button type="button" class="roster-stepper-btn" data-action="dec">&minus;</button>
+            <span class="roster-stepper-count">{{ default_roster_config['FLEX'] }}</span>
+            <button type="button" class="roster-stepper-btn" data-action="inc">+</button>
+          </div>
+          <input type="hidden" name="pos_FLEX" value="{{ default_roster_config['FLEX'] }}">
+        </div>
+        <div class="roster-stepper-row roster-stepper-bench" data-pos="BN" data-max="{{ roster_bench_max }}">
+          <span class="roster-stepper-label">Bench</span>
+          <div class="roster-stepper-controls">
+            <button type="button" class="roster-stepper-btn" data-action="dec">&minus;</button>
+            <span class="roster-stepper-count">{{ default_roster_config['BN'] }}</span>
+            <button type="button" class="roster-stepper-btn" data-action="inc">+</button>
+          </div>
+          <input type="hidden" name="bench" id="bench_input" value="{{ default_roster_config['BN'] }}">
+        </div>
+      </div>
+      <p class="hint" id="roster_total_hint"></p>
+    </div>
 
     <div class="form-row">
       <label>Human players (including you)
@@ -69,6 +102,10 @@
   </form>
 
   <script>
+    const DEFAULT_BENCH = {{ default_roster_config['BN'] }};
+    const DYNASTY_BENCH = {{ dynasty_bench }};
+    const benchInput = document.getElementById('bench_input');
+
     const formatEl = document.getElementById('league_format');
     const formatHintEl = document.getElementById('format_hint');
     const FORMAT_HINTS = {
@@ -79,8 +116,49 @@
     function syncFormatHint() {
       formatHintEl.textContent = FORMAT_HINTS[formatEl.value] || '';
     }
-    formatEl.addEventListener('change', syncFormatHint);
+    let userTouchedBench = false;
+    formatEl.addEventListener('change', () => {
+      syncFormatHint();
+      if (!userTouchedBench) {
+        setStepperValue(benchInput.closest('.roster-stepper-row'), formatEl.value === 'Dynasty' ? DYNASTY_BENCH : DEFAULT_BENCH);
+      }
+    });
     syncFormatHint();
+
+    // ---- roster settings steppers (starters per position + bench) --------
+
+    function setStepperValue(row, value) {
+      const max = parseInt(row.dataset.max, 10);
+      const clamped = Math.max(0, Math.min(max, value));
+      row.querySelector('.roster-stepper-count').textContent = clamped;
+      row.querySelector('input[type="hidden"]').value = clamped;
+      return clamped;
+    }
+
+    function syncRosterTotal() {
+      const rows = document.querySelectorAll('#roster-stepper-grid .roster-stepper-row');
+      let starters = 0;
+      let bench = 0;
+      rows.forEach((row) => {
+        const n = parseInt(row.querySelector('input[type="hidden"]').value, 10) || 0;
+        if (row.dataset.pos === 'BN') bench = n;
+        else starters += n;
+      });
+      const totalHintEl = document.getElementById('roster_total_hint');
+      totalHintEl.textContent = `${starters} starters + ${bench} bench = ${starters + bench} roster spots.`;
+      totalHintEl.classList.toggle('hint-bad', starters < 1);
+    }
+
+    document.querySelectorAll('#roster-stepper-grid .roster-stepper-btn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const row = btn.closest('.roster-stepper-row');
+        if (row.dataset.pos === 'BN') userTouchedBench = true;
+        const current = parseInt(row.querySelector('input[type="hidden"]').value, 10) || 0;
+        setStepperValue(row, current + (btn.dataset.action === 'inc' ? 1 : -1));
+        syncRosterTotal();
+      });
+    });
+    syncRosterTotal();
 
     const teamsEl = document.getElementById('num_teams');
     const humanEl = document.getElementById('num_human_slots');

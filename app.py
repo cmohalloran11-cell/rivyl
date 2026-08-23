@@ -180,24 +180,82 @@ AI_SPEED_LABELS = {
 }
 HUMAN_TIMER_CHOICES = [30, 60, 90, 120]
 
-STARTER_REQUIREMENTS = {"QB": 1, "RB": 2, "WR": 2, "TE": 1, "K": 1, "DEF": 1}
-FLEX_SLOTS = 1
 # FLEX is a roster SLOT that an RB or WR can fill -- not a position of its own.
 # TE doesn't flex here (some leagues allow it; this one doesn't).
 FLEX_ELIGIBLE = {"RB", "WR"}
 
-# Persistent per-pick lineup slot codes (stored on draft_picks.lineup_slot),
-# so a user's drag-and-drop lineup changes stick instead of being recomputed.
-STARTER_SLOT_ORDER = ["QB", "RB1", "RB2", "WR1", "WR2", "TE", "K", "DEF", "FLEX"]
-SLOT_ELIGIBLE_POSITIONS = {
-    "QB": {"QB"}, "RB1": {"RB"}, "RB2": {"RB"}, "WR1": {"WR"}, "WR2": {"WR"},
-    "TE": {"TE"}, "K": {"K"}, "DEF": {"DEF"}, "FLEX": FLEX_ELIGIBLE,
-    "BN": set(STARTER_REQUIREMENTS),
-}
+# Roster shape (starters per position, FLEX count, bench size) is configurable
+# per league (commissioner sets it at creation, stored as roster_config_json).
+# This is just the fallback for leagues created before that existed, or if a
+# league's stored config is somehow missing/corrupt.
+DEFAULT_ROSTER_CONFIG = {"QB": 1, "RB": 2, "WR": 2, "TE": 1, "FLEX": 1, "K": 1, "DEF": 1, "BN": 7}
+ROSTER_SLOT_MAX = 6
+ROSTER_BENCH_MAX = 20
 
 
 def slot_display_label(slot_code):
     return slot_code[:-1] if slot_code[-1].isdigit() else slot_code
+
+
+def get_roster_config(league):
+    """The commissioner-configured roster shape for a league: starters per
+    position, FLEX count, and bench size. Falls back to the pre-configurable
+    default (scaled to the league's Dynasty/Redraft bench size) for leagues
+    created before this existed, or a corrupt/missing config."""
+    raw = league["roster_config_json"]
+    if raw:
+        try:
+            cfg = json.loads(raw)
+        except (TypeError, ValueError):
+            cfg = None
+        if isinstance(cfg, dict):
+            return {k: int(cfg.get(k, v)) for k, v in DEFAULT_ROSTER_CONFIG.items()}
+    starters = sum(DEFAULT_ROSTER_CONFIG[pos] for pos in POSITION_ORDER) + DEFAULT_ROSTER_CONFIG["FLEX"]
+    total = DYNASTY_ROSTER_ROUNDS if league["league_format"] == "Dynasty" else ROSTER_ROUNDS
+    return {**DEFAULT_ROSTER_CONFIG, "BN": max(0, total - starters)}
+
+
+def roster_starter_requirements(roster_config):
+    """Real per-position minimums the draft enforces -- excludes FLEX/bench,
+    which aren't tied to a specific position."""
+    return {pos: roster_config.get(pos, 0) for pos in POSITION_ORDER}
+
+
+def roster_total_rounds(roster_config):
+    return (
+        sum(roster_config.get(pos, 0) for pos in POSITION_ORDER)
+        + roster_config.get("FLEX", 0) + roster_config.get("BN", 0)
+    )
+
+
+def roster_slot_order(roster_config):
+    """Persistent per-pick lineup slot codes (stored on draft_picks.lineup_slot).
+    Multi-count positions/FLEX get numbered suffixes (RB1/RB2, FLEX1/FLEX2)
+    only when there's more than one, so single-slot leagues keep plain codes."""
+    order = []
+    for pos in POSITION_ORDER:
+        n = roster_config.get(pos, 0)
+        for i in range(n):
+            order.append(pos if n == 1 else f"{pos}{i + 1}")
+    flex_n = roster_config.get("FLEX", 0)
+    for i in range(flex_n):
+        order.append("FLEX" if flex_n == 1 else f"FLEX{i + 1}")
+    return order
+
+
+def roster_config_label(roster_config):
+    parts = [f"{roster_config[pos]}{pos}" for pos in POSITION_ORDER if roster_config.get(pos)]
+    if roster_config.get("FLEX"):
+        parts.append(f"{roster_config['FLEX']}FLEX")
+    return f"{'/'.join(parts) or 'No starters'} + {roster_config.get('BN', 0)} BN"
+
+
+def roster_slot_eligible_positions(roster_config):
+    mapping = {"BN": set(POSITION_ORDER)}
+    for slot in roster_slot_order(roster_config):
+        base = slot_display_label(slot)
+        mapping[slot] = set(FLEX_ELIGIBLE) if base == "FLEX" else {base}
+    return mapping
 # Soft target: bonus for adding depth at a position stops once a team hits this
 # many (e.g. most single-QB rosters settle on 2 QBs -- a starter + a backup).
 BENCH_SOFT_CAP = {"QB": 2, "RB": 6, "WR": 7, "TE": 2, "K": 1, "DEF": 1}
@@ -505,6 +563,7 @@ def init_db():
             "ai_moves_at": "ALTER TABLE leagues ADD COLUMN ai_moves_at REAL",
             "ai_trade_offers_at": "ALTER TABLE leagues ADD COLUMN ai_trade_offers_at REAL",
             "league_format": "ALTER TABLE leagues ADD COLUMN league_format TEXT NOT NULL DEFAULT 'Redraft'",
+            "roster_config_json": "ALTER TABLE leagues ADD COLUMN roster_config_json TEXT",
         },
         "players": {
             "years_exp": "ALTER TABLE players ADD COLUMN years_exp INTEGER NOT NULL DEFAULT 0",
@@ -528,6 +587,7 @@ def init_db():
             "logo_icon": "ALTER TABLE teams ADD COLUMN logo_icon TEXT",
             "logo_color": "ALTER TABLE teams ADD COLUMN logo_color TEXT",
             "eliminated_week": "ALTER TABLE teams ADD COLUMN eliminated_week INTEGER",
+            "queue_json": "ALTER TABLE teams ADD COLUMN queue_json TEXT",
         },
         "nfl_games": {
             "stats_synced": "ALTER TABLE nfl_games ADD COLUMN stats_synced INTEGER NOT NULL DEFAULT 0",
@@ -578,6 +638,7 @@ def sync_players(db, force=False):
     # team assignment, experience, and current injury status -- it does not
     # define the player pool or the ranking order anymore.
     sleeper_by_key = {}
+    raw = {}
     try:
         resp = requests.get(SLEEPER_PLAYERS_URL, timeout=25)
         resp.raise_for_status()
@@ -633,6 +694,30 @@ def sync_players(db, force=False):
             r["rank_ppr"], r["rank_half"], r["rank_std"],
             r.get("pos_rank"), r.get("tier"),
         ))
+
+    # Below the top-500 consensus board, fall back to Sleeper's full player
+    # pool so deep-bench/UDFA guys (e.g. a rookie WR nobody ranked) are still
+    # searchable and draftable -- just always sorted last, since they have no
+    # real ranking. Skip anyone already pulled in above via sleeper_by_key.
+    used_sleeper_ids = {row[0] for row in rows if not row[0].startswith(("GEN-", "DEF-"))}
+    for pid, p in raw.items():
+        if pid in used_sleeper_ids or not isinstance(p, dict):
+            continue
+        pos = p.get("position")
+        if pos not in POSITION_ORDER or pos == "DEF":
+            continue
+        if not p.get("team"):
+            continue
+        full_name = p.get("full_name") or f"{p.get('first_name', '')} {p.get('last_name', '')}".strip()
+        if not full_name:
+            continue
+        years_exp = p.get("years_exp")
+        rows.append((
+            pid, full_name, pos, p.get("team"),
+            999999, years_exp if isinstance(years_exp, int) else 0, p.get("injury_status") or None,
+            999999, 999999, 999999, None, None,
+        ))
+        used_sleeper_ids.add(pid)
 
     if not rows:
         return count > 0
@@ -1126,13 +1211,17 @@ def new_league():
             scoring_choices=SCORING_CHOICES,
             draft_type_choices=DRAFT_TYPE_CHOICES,
             league_format_choices=LEAGUE_FORMAT_CHOICES,
+            position_order=POSITION_ORDER,
+            default_roster_config=DEFAULT_ROSTER_CONFIG,
+            roster_slot_max=ROSTER_SLOT_MAX,
+            roster_bench_max=ROSTER_BENCH_MAX,
+            dynasty_bench=DYNASTY_ROSTER_ROUNDS - (sum(DEFAULT_ROSTER_CONFIG[p] for p in POSITION_ORDER) + DEFAULT_ROSTER_CONFIG["FLEX"]),
         )
 
     name = request.form.get("league_name", "").strip()
     commissioner_name = request.form.get("commissioner_name", "").strip()
     commissioner_team_name = request.form.get("commissioner_team_name", "").strip()
     scoring = request.form.get("scoring", SCORING_CHOICES[0])
-    roster_settings = request.form.get("roster_settings", "").strip() or "Standard (1QB/2RB/2WR/1TE/1FLEX/1DST/1K)"
     draft_type = request.form.get("draft_type", DRAFT_TYPE_CHOICES[0])
     league_format = request.form.get("league_format", LEAGUE_FORMAT_CHOICES[0])
     if league_format not in LEAGUE_FORMAT_CHOICES:
@@ -1144,6 +1233,17 @@ def new_league():
         num_ai_slots = int(request.form.get("num_ai_slots", 0))
     except ValueError:
         flash("Team counts must be numbers.")
+        return redirect(url_for("new_league"))
+
+    roster_config = {}
+    try:
+        for pos in POSITION_ORDER + ["FLEX"]:
+            n = int(request.form.get(f"pos_{pos}", DEFAULT_ROSTER_CONFIG[pos]))
+            roster_config[pos] = max(0, min(ROSTER_SLOT_MAX, n))
+        bench = int(request.form.get("bench", DEFAULT_ROSTER_CONFIG["BN"]))
+        roster_config["BN"] = max(0, min(ROSTER_BENCH_MAX, bench))
+    except ValueError:
+        flash("Roster settings must be numbers.")
         return redirect(url_for("new_league"))
 
     errors = []
@@ -1160,11 +1260,15 @@ def new_league():
             f"Human slots ({num_human_slots}) + AI slots ({num_ai_slots}) must add up to "
             f"the number of teams ({num_teams})."
         )
+    if sum(roster_config[pos] for pos in POSITION_ORDER) + roster_config["FLEX"] < 1:
+        errors.append("Your lineup needs at least one starting slot.")
 
     if errors:
         for err in errors:
             flash(err)
         return redirect(url_for("new_league"))
+
+    roster_settings = roster_config_label(roster_config)
 
     db = get_db()
     invite_code = generate_invite_code()
@@ -1174,12 +1278,13 @@ def new_league():
     cur = db.execute(
         """
         INSERT INTO leagues (name, num_teams, num_human_slots, num_ai_slots, scoring,
-                              roster_settings, draft_type, commissioner_name, invite_code, league_format)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                              roster_settings, draft_type, commissioner_name, invite_code, league_format,
+                              roster_config_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         RETURNING id
         """,
         (name, num_teams, num_human_slots, num_ai_slots, scoring, roster_settings,
-         draft_type, commissioner_name, invite_code, league_format),
+         draft_type, commissioner_name, invite_code, league_format, json.dumps(roster_config)),
     )
     league_id = cur.fetchone()["id"]
 
@@ -1599,6 +1704,7 @@ def lineup_swap(league_id, team_id):
         return jsonify({"error": "forbidden"}), 403
 
     ensure_lineup_slots(db, league_id, team_id)
+    slot_eligible = roster_slot_eligible_positions(get_roster_config(league))
 
     try:
         pick_a_id = int(request.form.get("pick_a", ""))
@@ -1616,7 +1722,7 @@ def lineup_swap(league_id, team_id):
     # swap -- there's no second player to trade places with.
     target_slot = request.form.get("target_slot")
     if target_slot:
-        if target_slot not in SLOT_ELIGIBLE_POSITIONS:
+        if target_slot not in slot_eligible:
             return jsonify({"error": "invalid_request"}), 400
         # Bench has no fixed capacity -- only real starter slots are exclusive.
         occupied = None if target_slot == "BN" else db.execute(
@@ -1628,7 +1734,7 @@ def lineup_swap(league_id, team_id):
         ).fetchone()
         if occupied is not None:
             return jsonify({"error": "occupied", "message": "That slot is already filled."}), 400
-        if pick_a["position"] not in SLOT_ELIGIBLE_POSITIONS.get(target_slot, set()):
+        if pick_a["position"] not in slot_eligible.get(target_slot, set()):
             return jsonify({
                 "error": "ineligible",
                 "message": f"{pick_a['position']} can't fill {slot_display_label(target_slot)}.",
@@ -1648,8 +1754,8 @@ def lineup_swap(league_id, team_id):
             return jsonify({"error": "invalid_picks"}), 400
 
         slot_a, slot_b = pick_a["lineup_slot"], pick_b["lineup_slot"]
-        a_fits_b = pick_a["position"] in SLOT_ELIGIBLE_POSITIONS.get(slot_b, set())
-        b_fits_a = pick_b["position"] in SLOT_ELIGIBLE_POSITIONS.get(slot_a, set())
+        a_fits_b = pick_a["position"] in slot_eligible.get(slot_b, set())
+        b_fits_a = pick_b["position"] in slot_eligible.get(slot_a, set())
         if not (a_fits_b and b_fits_a):
             if not a_fits_b:
                 blocker, blocked_slot = pick_a, slot_b
@@ -2313,14 +2419,14 @@ def get_position_counts(db, league_id, team_id):
     return {r["position"]: r["c"] for r in rows}
 
 
-def compute_need_bonus(position_counts, position):
+def compute_need_bonus(position_counts, position, roster_config):
     have = position_counts.get(position, 0)
-    starters = STARTER_REQUIREMENTS.get(position, 0)
+    starters = roster_config.get(position, 0)
     if have < starters:
         return 45
     if position in FLEX_ELIGIBLE:
         flex_have = sum(position_counts.get(p, 0) for p in FLEX_ELIGIBLE)
-        flex_total_slots = sum(STARTER_REQUIREMENTS.get(p, 0) for p in FLEX_ELIGIBLE) + FLEX_SLOTS
+        flex_total_slots = sum(roster_config.get(p, 0) for p in FLEX_ELIGIBLE) + roster_config.get("FLEX", 0)
         if flex_have < flex_total_slots:
             return 20
     cap = BENCH_SOFT_CAP.get(position, 4)
@@ -2358,14 +2464,14 @@ def compute_tier_bonus(tier_counts, position, tier):
     return 0.0
 
 
-def score_players(available_players, position_counts, available_counts, profile, current_round, overall_pick):
+def score_players(available_players, position_counts, available_counts, profile, current_round, overall_pick, roster_config):
     tier_counts = compute_tier_counts(available_players)
     scored = []
     for p in available_players:
         rank = p["rank"]
         pos = p["position"]
         value = max(0.0, 420 - rank * 1.8)
-        need = compute_need_bonus(position_counts, pos) * profile.get("need_multiplier", 1.0)
+        need = compute_need_bonus(position_counts, pos, roster_config) * profile.get("need_multiplier", 1.0)
         scarcity = compute_scarcity_bonus(available_counts, pos)
         tier_bonus = compute_tier_bonus(tier_counts, pos, p["tier"])
         bonus = tier_bonus
@@ -2444,15 +2550,15 @@ def build_reasoning(team, personality, player, need_bonus, current_round, is_aut
     return f"{label} is {flavor} — {player['full_name']} {need_phrase} (rank #{player['rank']})."
 
 
-def get_forced_positions(position_counts, current_round, total_rounds):
-    """Every roster must hit STARTER_REQUIREMENTS (1 QB, 2 RB, 2 WR, 1 TE,
-    1 K, 1 DEF) by the end of the draft. Once a team is down to exactly as
-    many picks as unmet requirements, every remaining pick has to go toward
-    one of them -- otherwise there'd be no room left to fill the minimums.
+def get_forced_positions(position_counts, current_round, total_rounds, starter_requirements):
+    """Every roster must hit its configured starter minimums (per-position)
+    by the end of the draft. Once a team is down to exactly as many picks as
+    unmet requirements, every remaining pick has to go toward one of them --
+    otherwise there'd be no room left to fill the minimums.
     Returns the set of positions still owed, or None if there's slack left."""
     deficits = {
         pos: max(0, need - position_counts.get(pos, 0))
-        for pos, need in STARTER_REQUIREMENTS.items()
+        for pos, need in starter_requirements.items()
     }
     total_deficit = sum(deficits.values())
     if total_deficit == 0:
@@ -2463,7 +2569,7 @@ def get_forced_positions(position_counts, current_round, total_rounds):
     return None
 
 
-def execute_pick_for_team(db, league_id, pick_row, team_row, scoring, personality=None, is_autopick=False):
+def execute_pick_for_team(db, league_id, pick_row, team_row, scoring, personality=None, is_autopick=False, forced_player_id=None):
     available = get_available_players(db, league_id, scoring)
     if not available:
         return None
@@ -2478,40 +2584,56 @@ def execute_pick_for_team(db, league_id, pick_row, team_row, scoring, personalit
     ]
     pool = within_cap or available
 
-    total_rounds = db.execute("SELECT rounds FROM leagues WHERE id = ?", (league_id,)).fetchone()["rounds"]
-    forced = get_forced_positions(position_counts, pick_row["round"], total_rounds)
+    league = db.execute("SELECT * FROM leagues WHERE id = ?", (league_id,)).fetchone()
+    roster_config = get_roster_config(league)
+    starter_requirements = roster_starter_requirements(roster_config)
+    forced = get_forced_positions(position_counts, pick_row["round"], league["rounds"], starter_requirements)
     if forced:
         forced_pool = [p for p in pool if p["position"] in forced]
         pool = forced_pool or pool
 
-    available_counts = {}
-    for p in pool:
-        available_counts[p["position"]] = available_counts.get(p["position"], 0) + 1
+    reasoning = None
+    player = None
+    if forced_player_id is not None:
+        queued = next((p for p in pool if p["id"] == forced_player_id), None)
+        if queued is not None:
+            player = queued
+            reasoning = f"{team_row['team_name']} auto-drafts {player['full_name']} ({player['position']}) — top of your queue."
 
-    profile = PERSONALITY_PROFILES.get(personality, {}) if personality else {}
-    scored = score_players(
-        pool, position_counts, available_counts, profile,
-        pick_row["round"], pick_row["overall_pick"],
-    )
-    chosen = choose_from_scored(scored, profile)
-    player = chosen["player"]
+    if player is None:
+        available_counts = {}
+        for p in pool:
+            available_counts[p["position"]] = available_counts.get(p["position"], 0) + 1
 
-    reasoning = build_reasoning(
-        team_row, personality, player, chosen["need"], pick_row["round"], is_autopick, chosen["tier_bonus"]
-    )
+        profile = PERSONALITY_PROFILES.get(personality, {}) if personality else {}
+        scored = score_players(
+            pool, position_counts, available_counts, profile,
+            pick_row["round"], pick_row["overall_pick"], roster_config,
+        )
+        chosen = choose_from_scored(scored, profile)
+        player = chosen["player"]
+        reasoning = build_reasoning(
+            team_row, personality, player, chosen["need"], pick_row["round"], is_autopick, chosen["tier_bonus"]
+        )
 
-    db.execute(
+    # Guard against a concurrent request (another poll/tab racing this same
+    # pick) having already claimed it between our read and this write --
+    # without WHERE player_id IS NULL two overlapping requests can both
+    # "win", overwriting each other's player and double-advancing the clock.
+    cur = db.execute(
         """
         UPDATE draft_picks
         SET player_id = ?, player_name = ?, position = ?, nfl_team = ?, player_rank = ?,
             reasoning = ?, is_autopick = ?, drafted_at = datetime('now')
-        WHERE id = ?
+        WHERE id = ? AND player_id IS NULL
         """,
         (
             player["id"], player["full_name"], player["position"], player["nfl_team"],
             player["rank"], reasoning, 1 if is_autopick else 0, pick_row["id"],
         ),
     )
+    if cur.rowcount == 0:
+        return None
     return player
 
 
@@ -2527,16 +2649,22 @@ def get_current_pick_row(db, league_id, overall_pick):
     ).fetchone()
 
 
-def advance_after_pick(db, league_id):
+def advance_after_pick(db, league_id, from_index):
     league = db.execute("SELECT * FROM leagues WHERE id = ?", (league_id,)).fetchone()
+    if league is None or league["current_pick_index"] != from_index:
+        # Someone else (a concurrent request) already advanced this pick --
+        # advancing again here would skip a team's turn.
+        return
     total_picks = league["num_teams"] * league["rounds"]
-    next_index = league["current_pick_index"] + 1
+    next_index = from_index + 1
 
     if next_index > total_picks:
-        db.execute(
-            "UPDATE leagues SET current_pick_index = ?, draft_status = 'complete', pick_deadline = NULL, current_week = 1 WHERE id = ?",
-            (next_index, league_id),
+        cur = db.execute(
+            "UPDATE leagues SET current_pick_index = ?, draft_status = 'complete', pick_deadline = NULL, current_week = 1 WHERE id = ? AND current_pick_index = ?",
+            (next_index, league_id, from_index),
         )
+        if cur.rowcount == 0:
+            return
         db.commit()
         compute_and_store_grades(db, league_id)
         generate_schedule(db, league_id)
@@ -2544,10 +2672,12 @@ def advance_after_pick(db, league_id):
 
     next_pick = get_current_pick_row(db, league_id, next_index)
     deadline = time.time() + league["human_timer_seconds"] if next_pick["owner_type"] == "human" else None
-    db.execute(
-        "UPDATE leagues SET current_pick_index = ?, pick_deadline = ? WHERE id = ?",
-        (next_index, deadline, league_id),
+    cur = db.execute(
+        "UPDATE leagues SET current_pick_index = ?, pick_deadline = ? WHERE id = ? AND current_pick_index = ?",
+        (next_index, deadline, league_id, from_index),
     )
+    if cur.rowcount == 0:
+        return
     db.commit()
 
 
@@ -2563,10 +2693,28 @@ def maybe_auto_draft_timeout(db, league_id):
         return
 
     team_row = db.execute("SELECT * FROM teams WHERE id = ?", (pick_row["team_id"],)).fetchone()
-    if execute_pick_for_team(db, league_id, pick_row, team_row, league["scoring"], personality=None, is_autopick=True) is None:
+
+    forced_player_id = None
+    if team_row["queue_json"]:
+        try:
+            queued_ids = json.loads(team_row["queue_json"])
+        except (TypeError, ValueError):
+            queued_ids = []
+        drafted_ids = {
+            row["player_id"] for row in db.execute(
+                "SELECT player_id FROM draft_picks WHERE league_id = ? AND player_id IS NOT NULL",
+                (league_id,),
+            ).fetchall()
+        }
+        forced_player_id = next((pid for pid in queued_ids if pid not in drafted_ids), None)
+
+    if execute_pick_for_team(
+        db, league_id, pick_row, team_row, league["scoring"],
+        personality=None, is_autopick=True, forced_player_id=forced_player_id,
+    ) is None:
         return
     db.commit()
-    advance_after_pick(db, league_id)
+    advance_after_pick(db, league_id, league["current_pick_index"])
 
 
 def compute_and_store_grades(db, league_id):
@@ -2775,12 +2923,13 @@ def ensure_ai_teams_optimal(db, league_id):
     if not ai_teams:
         return
 
+    starter_requirements = roster_starter_requirements(get_roster_config(league))
     for team in ai_teams:
         picks = get_roster_picks(db, league_id, team["id"])
         counts = {}
         for p in picks:
             counts[p["position"]] = counts.get(p["position"], 0) + 1
-        missing = [pos for pos, need in STARTER_REQUIREMENTS.items() if counts.get(pos, 0) < need]
+        missing = [pos for pos, need in starter_requirements.items() if counts.get(pos, 0) < need]
         if not missing:
             continue
 
@@ -2948,7 +3097,7 @@ def evaluate_trade_for_ai(ai_team, give_picks, receive_picks):
     return accept, reason
 
 
-def find_ai_trade_offer(ai_team, ai_picks, target_picks):
+def find_ai_trade_offer(ai_team, ai_picks, target_picks, starter_requirements):
     """Looks for a sensible offer an AI team could send another team: give up
     a surplus player to fill the AI's biggest positional need, at a fair-ish
     value (within 35% of the target player's value, either direction)."""
@@ -2960,8 +3109,8 @@ def find_ai_trade_offer(ai_team, ai_picks, target_picks):
         ai_counts[p["position"]] = ai_counts.get(p["position"], 0) + 1
 
     need_positions = sorted(
-        STARTER_REQUIREMENTS.keys(),
-        key=lambda pos: ai_counts.get(pos, 0) - STARTER_REQUIREMENTS.get(pos, 0),
+        starter_requirements.keys(),
+        key=lambda pos: ai_counts.get(pos, 0) - starter_requirements.get(pos, 0),
     )
     want = None
     for pos in need_positions:
@@ -3006,6 +3155,7 @@ def maybe_ai_trade_offers(db, league_id):
     ).fetchall()
     ai_teams = [t for t in teams if t["owner_type"] == "ai"]
     human_teams = [t for t in teams if t["owner_type"] == "human"]
+    starter_requirements = roster_starter_requirements(get_roster_config(league))
 
     if human_teams:
         for ai_team in ai_teams:
@@ -3020,7 +3170,7 @@ def maybe_ai_trade_offers(db, league_id):
 
             ai_picks = get_roster_picks(db, league_id, ai_team["id"])
             target_picks = get_roster_picks(db, league_id, target["id"])
-            found = find_ai_trade_offer(ai_team, ai_picks, target_picks)
+            found = find_ai_trade_offer(ai_team, ai_picks, target_picks, starter_requirements)
             if found is None:
                 continue
             give, want = found
@@ -3284,6 +3434,9 @@ def set_optimal_lineup(db, league_id, team_id):
     roster, best-rank-first per required slot then FLEX from what's left --
     always recomputes, unlike ensure_lineup_slots. Used by the AI
     auto-optimizer and the human 'Generate Best Lineup' button."""
+    league = db.execute("SELECT * FROM leagues WHERE id = ?", (league_id,)).fetchone()
+    roster_config = get_roster_config(league)
+
     picks = db.execute(
         """
         SELECT * FROM draft_picks
@@ -3298,7 +3451,7 @@ def set_optimal_lineup(db, league_id, team_id):
     remaining = list(picks)
     assignments = []
 
-    for pos, count in STARTER_REQUIREMENTS.items():
+    for pos, count in roster_starter_requirements(roster_config).items():
         for i in range(count):
             idx = next((j for j, p in enumerate(remaining) if p["position"] == pos), None)
             if idx is not None:
@@ -3306,10 +3459,14 @@ def set_optimal_lineup(db, league_id, team_id):
                 slot_code = pos if count == 1 else f"{pos}{i + 1}"
                 assignments.append((pick["id"], slot_code))
 
-    idx = next((j for j, p in enumerate(remaining) if p["position"] in FLEX_ELIGIBLE), None)
-    if idx is not None:
+    flex_n = roster_config.get("FLEX", 0)
+    for i in range(flex_n):
+        idx = next((j for j, p in enumerate(remaining) if p["position"] in FLEX_ELIGIBLE), None)
+        if idx is None:
+            break
         pick = remaining.pop(idx)
-        assignments.append((pick["id"], "FLEX"))
+        slot_code = "FLEX" if flex_n == 1 else f"FLEX{i + 1}"
+        assignments.append((pick["id"], slot_code))
 
     for p in remaining:
         assignments.append((p["id"], "BN"))
@@ -3335,6 +3492,8 @@ def ensure_lineup_slots(db, league_id, team_id):
 
 def build_lineup(db, league_id, team_id):
     ensure_lineup_slots(db, league_id, team_id)
+    league = db.execute("SELECT * FROM leagues WHERE id = ?", (league_id,)).fetchone()
+    slot_order = roster_slot_order(get_roster_config(league))
 
     picks = db.execute(
         """
@@ -3360,7 +3519,7 @@ def build_lineup(db, league_id, team_id):
             by_slot[p["lineup_slot"]] = p
 
     starters = []
-    for slot_code in STARTER_SLOT_ORDER:
+    for slot_code in slot_order:
         p = by_slot.get(slot_code)
         label = slot_display_label(slot_code)
         if p is not None:
@@ -3466,6 +3625,8 @@ def build_state(league_id):
         for t in teams_rows
     ]
 
+    roster_config = get_roster_config(league)
+
     on_the_clock = None
     remaining_seconds = None
     forced_positions = None
@@ -3477,7 +3638,10 @@ def build_state(league_id):
             if on_clock_row["owner_type"] == "human" and league["pick_deadline"]:
                 remaining_seconds = max(0, round(league["pick_deadline"] - time.time()))
             on_clock_counts = get_position_counts(db, league_id, on_clock_row["team_id"])
-            forced = get_forced_positions(on_clock_counts, on_clock_row["round"], league["rounds"])
+            forced = get_forced_positions(
+                on_clock_counts, on_clock_row["round"], league["rounds"],
+                roster_starter_requirements(roster_config),
+            )
             forced_positions = sorted(forced) if forced else None
         available_players = [
             {
@@ -3496,6 +3660,7 @@ def build_state(league_id):
             "draft_status": league["draft_status"], "current_pick_index": league["current_pick_index"],
             "rounds": league["rounds"], "total_picks": total_picks,
             "ai_speed": league["ai_speed"], "human_timer_seconds": league["human_timer_seconds"],
+            "roster_config": roster_config,
         },
         "my_team_id": get_my_team_id(league_id, teams_rows),
         "on_the_clock": on_the_clock,
@@ -3509,6 +3674,7 @@ def build_state(league_id):
             "state": url_for("draft_state", league_id=league_id),
             "advance": url_for("draft_advance", league_id=league_id),
             "pick": url_for("draft_pick", league_id=league_id),
+            "queue": url_for("draft_queue", league_id=league_id),
         },
     }
 
@@ -3556,7 +3722,7 @@ def start_draft(league_id):
 
     team_ids = [tid for tid, _ in draft_order]
 
-    rounds = DYNASTY_ROSTER_ROUNDS if league["league_format"] == "Dynasty" else ROSTER_ROUNDS
+    rounds = roster_total_rounds(get_roster_config(league))
     order = build_snake_order(team_ids, rounds)
     db.executemany(
         """
@@ -3618,7 +3784,7 @@ def draft_advance(league_id):
             team_row = db.execute("SELECT * FROM teams WHERE id = ?", (pick_row["team_id"],)).fetchone()
             if execute_pick_for_team(db, league_id, pick_row, team_row, league["scoring"], personality=team_row["ai_personality"]):
                 db.commit()
-                advance_after_pick(db, league_id)
+                advance_after_pick(db, league_id, league["current_pick_index"])
 
     state = build_state(league_id)
     if state is None:
@@ -3664,7 +3830,10 @@ def draft_pick(league_id):
         return jsonify({"error": "unavailable", **build_state(league_id)}), 409
 
     position_counts = get_position_counts(db, league_id, pick_row["team_id"])
-    forced = get_forced_positions(position_counts, pick_row["round"], league["rounds"])
+    forced = get_forced_positions(
+        position_counts, pick_row["round"], league["rounds"],
+        roster_starter_requirements(get_roster_config(league)),
+    )
     if forced and player["position"] not in forced:
         needed = ", ".join(sorted(forced))
         return jsonify({
@@ -3675,20 +3844,51 @@ def draft_pick(league_id):
 
     rank_col = RANK_COLUMN_BY_SCORING.get(league["scoring"], "rank_half")
     reasoning = f"{pick_row['owner_name'] or pick_row['team_name']} selects {player['full_name']} ({player['position']})."
-    db.execute(
+    cur = db.execute(
         """
         UPDATE draft_picks
         SET player_id = ?, player_name = ?, position = ?, nfl_team = ?, player_rank = ?,
             reasoning = ?, is_autopick = 0, drafted_at = datetime('now')
-        WHERE id = ?
+        WHERE id = ? AND player_id IS NULL
         """,
         (player["id"], player["full_name"], player["position"], player["nfl_team"],
          player[rank_col], reasoning, pick_row["id"]),
     )
+    if cur.rowcount == 0:
+        # Lost the race -- a concurrent request (e.g. this same pick's timeout
+        # firing) already claimed this pick out from under us.
+        return jsonify({"error": "not_your_turn", **build_state(league_id)}), 409
     db.commit()
-    advance_after_pick(db, league_id)
+    advance_after_pick(db, league_id, league["current_pick_index"])
 
     return jsonify(build_state(league_id))
+
+
+@app.route("/leagues/<int:league_id>/draft/queue", methods=["POST"])
+def draft_queue(league_id):
+    db = get_db()
+    team_id = session.get(f"team_{league_id}")
+    if team_id is None:
+        return jsonify({"error": "not_your_turn"}), 403
+
+    payload = request.get_json(silent=True) or {}
+    raw_ids = payload.get("player_ids")
+    if not isinstance(raw_ids, list):
+        return jsonify({"error": "invalid_payload"}), 400
+
+    player_ids = []
+    for pid in raw_ids[:200]:
+        try:
+            player_ids.append(int(pid))
+        except (TypeError, ValueError):
+            continue
+
+    db.execute(
+        "UPDATE teams SET queue_json = ? WHERE id = ? AND league_id = ?",
+        (json.dumps(player_ids), team_id, league_id),
+    )
+    db.commit()
+    return jsonify({"ok": True})
 
 
 init_db()

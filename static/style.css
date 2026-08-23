@@ -396,6 +396,42 @@ input:focus, select:focus {
 .hint { color: var(--text-dim); font-size: 0.83rem; margin: 2px 0 0; }
 .hint-bad { color: var(--danger); }
 
+.roster-settings-block { display: flex; flex-direction: column; gap: 6px; }
+.roster-settings-title { font-size: 0.83rem; color: var(--text-dim); font-weight: 600; }
+.roster-stepper-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 10px;
+  margin-top: 4px;
+}
+.roster-stepper-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 8px 10px;
+}
+.roster-stepper-bench { border-color: var(--border-bright); }
+.roster-stepper-label { font-size: 0.85rem; font-weight: 700; color: var(--text); }
+.roster-stepper-controls { display: flex; align-items: center; gap: 8px; }
+.roster-stepper-btn {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: var(--bg-elevated-2);
+  color: var(--text);
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.roster-stepper-btn:hover { border-color: var(--accent); color: var(--accent-strong); }
+.roster-stepper-count { min-width: 1.4em; text-align: center; font-weight: 700; font-variant-numeric: tabular-nums; }
+
 .empty-state {
   color: var(--text-dim);
   padding: 32px 20px;
