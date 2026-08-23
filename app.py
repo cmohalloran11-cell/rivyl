@@ -1,18 +1,90 @@
 import hashlib
 import json
+import os
 import random
-import sqlite3
+import re
 import string
 import time
 from pathlib import Path
 
+import psycopg2
+import psycopg2.extras
 import requests
 from flask import Flask, g, jsonify, redirect, render_template, request, session, url_for, flash
 
-DB_PATH = Path(__file__).parent / "fantasy.db"
+# Postgres (Neon / Vercel Postgres) -- this app used to run on a local SQLite
+# file, which doesn't work on serverless platforms (read-only filesystem, no
+# persistent disk). DATABASE_URL must be set; there's no SQLite fallback --
+# maintaining two SQL dialects side by side isn't worth the drift/bug risk.
+DATABASE_URL = os.environ.get("DATABASE_URL") or os.environ.get("POSTGRES_URL")
 
 app = Flask(__name__)
-app.secret_key = "dev-secret-change-me"
+app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-change-me")
+
+_PLACEHOLDER_RE = re.compile(r"\?")
+
+
+def _translate_sql(sql):
+    """Lets the rest of this file keep using SQLite-flavored SQL (`?`
+    placeholders, `datetime('now')`, `last_insert_rowid()`) untouched --
+    translated to Postgres equivalents at the point of execution."""
+    sql = sql.replace("datetime('now')", "NOW()")
+    sql = sql.replace("last_insert_rowid()", "lastval()")
+    return _PLACEHOLDER_RE.sub("%s", sql)
+
+
+class PGCursor:
+    """Thin wrapper so callers can keep doing `db.execute(...).fetchone()`
+    / `.fetchall()` the way they did against sqlite3."""
+
+    def __init__(self, cur):
+        self._cur = cur
+
+    def fetchone(self):
+        return self._cur.fetchone()
+
+    def fetchall(self):
+        return self._cur.fetchall()
+
+    def __iter__(self):
+        return iter(self._cur)
+
+    @property
+    def rowcount(self):
+        return self._cur.rowcount
+
+
+class PGConnection:
+    """sqlite3.Connection-shaped facade over a psycopg2 connection -- so the
+    rest of the app's `db.execute(...)` / `db.executemany(...)` /
+    `db.commit()` call sites don't need to change one by one."""
+
+    def __init__(self, conn):
+        self._conn = conn
+
+    def execute(self, sql, params=()):
+        cur = self._conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+        cur.execute(_translate_sql(sql), params)
+        return PGCursor(cur)
+
+    def executemany(self, sql, seq_of_params):
+        cur = self._conn.cursor()
+        cur.executemany(_translate_sql(sql), seq_of_params)
+        return PGCursor(cur)
+
+    def executescript(self, sql):
+        cur = self._conn.cursor()
+        cur.execute(_translate_sql(sql))
+        return PGCursor(cur)
+
+    def commit(self):
+        self._conn.commit()
+
+    def rollback(self):
+        self._conn.rollback()
+
+    def close(self):
+        self._conn.close()
 
 TEAM_COUNT_CHOICES = [4, 6, 8, 10, 12, 14, 16, 32]
 SCORING_CHOICES = ["Standard", "Half PPR", "Full PPR"]
@@ -223,25 +295,39 @@ def points_allowed_score(points_allowed):
 
 def get_db():
     if "db" not in g:
-        g.db = sqlite3.connect(DB_PATH)
-        g.db.row_factory = sqlite3.Row
-        g.db.execute("PRAGMA foreign_keys = ON")
+        if not DATABASE_URL:
+            raise RuntimeError(
+                "DATABASE_URL (or POSTGRES_URL) environment variable is not set. "
+                "Provision a Postgres database (e.g. Vercel Storage or Neon) and set it."
+            )
+        raw = psycopg2.connect(DATABASE_URL)
+        g.db = PGConnection(raw)
     return g.db
 
 
 @app.teardown_appcontext
-def close_db(_exc):
+def close_db(exc):
     db = g.pop("db", None)
     if db is not None:
+        if exc is not None:
+            db.rollback()
+        else:
+            db.commit()
         db.close()
 
 
 def init_db():
-    db = sqlite3.connect(DB_PATH)
+    if not DATABASE_URL:
+        raise RuntimeError(
+            "DATABASE_URL (or POSTGRES_URL) environment variable is not set. "
+            "Provision a Postgres database (e.g. Vercel Storage or Neon) and set it."
+        )
+    raw = psycopg2.connect(DATABASE_URL)
+    db = PGConnection(raw)
     db.executescript(
         """
         CREATE TABLE IF NOT EXISTS leagues (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             name TEXT NOT NULL,
             num_teams INTEGER NOT NULL,
             num_human_slots INTEGER NOT NULL,
@@ -262,7 +348,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS teams (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             league_id INTEGER NOT NULL REFERENCES leagues(id) ON DELETE CASCADE,
             slot_index INTEGER NOT NULL,
             owner_type TEXT NOT NULL CHECK (owner_type IN ('human', 'ai')),
@@ -293,7 +379,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS draft_picks (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             league_id INTEGER NOT NULL REFERENCES leagues(id) ON DELETE CASCADE,
             overall_pick INTEGER NOT NULL,
             round INTEGER NOT NULL,
@@ -312,7 +398,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS matchups (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             league_id INTEGER NOT NULL REFERENCES leagues(id) ON DELETE CASCADE,
             week INTEGER NOT NULL,
             team_a_id INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
@@ -356,7 +442,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS trades (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             league_id INTEGER NOT NULL REFERENCES leagues(id) ON DELETE CASCADE,
             from_team_id INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
             to_team_id INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
@@ -367,7 +453,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS trade_items (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             trade_id INTEGER NOT NULL REFERENCES trades(id) ON DELETE CASCADE,
             pick_id INTEGER NOT NULL REFERENCES draft_picks(id) ON DELETE CASCADE,
             from_team_id INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
@@ -376,7 +462,7 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS transactions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             league_id INTEGER NOT NULL REFERENCES leagues(id) ON DELETE CASCADE,
             team_id INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
             kind TEXT NOT NULL,
@@ -428,7 +514,12 @@ def init_db():
         },
     }
     for table, columns in table_migrations.items():
-        existing_columns = {row[1] for row in db.execute(f"PRAGMA table_info({table})")}
+        existing_columns = {
+            row["column_name"] for row in db.execute(
+                "SELECT column_name FROM information_schema.columns WHERE table_name = ?",
+                (table,),
+            ).fetchall()
+        }
         for column, ddl in columns.items():
             if column not in existing_columns:
                 db.execute(ddl)
@@ -530,10 +621,16 @@ def sync_players(db, force=False):
         db.execute("DELETE FROM players")
     db.executemany(
         """
-        INSERT OR REPLACE INTO players
+        INSERT INTO players
             (id, full_name, position, nfl_team, search_rank, years_exp, injury_status,
              rank_ppr, rank_half, rank_std, pos_rank, tier)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT (id) DO UPDATE SET
+            full_name = EXCLUDED.full_name, position = EXCLUDED.position,
+            nfl_team = EXCLUDED.nfl_team, search_rank = EXCLUDED.search_rank,
+            years_exp = EXCLUDED.years_exp, injury_status = EXCLUDED.injury_status,
+            rank_ppr = EXCLUDED.rank_ppr, rank_half = EXCLUDED.rank_half,
+            rank_std = EXCLUDED.rank_std, pos_rank = EXCLUDED.pos_rank, tier = EXCLUDED.tier
         """,
         rows,
     )
@@ -604,14 +701,22 @@ def sync_nfl_schedule(db, week, force=False):
         db.execute("DELETE FROM nfl_schedule WHERE week = ?", (week,))
         db.execute("DELETE FROM nfl_games WHERE week = ?", (week,))
     db.executemany(
-        "INSERT OR REPLACE INTO nfl_schedule (week, team, opponent, is_home) VALUES (?, ?, ?, ?)",
+        """
+        INSERT INTO nfl_schedule (week, team, opponent, is_home) VALUES (?, ?, ?, ?)
+        ON CONFLICT (week, team) DO UPDATE SET
+            opponent = EXCLUDED.opponent, is_home = EXCLUDED.is_home
+        """,
         rows,
     )
     db.executemany(
         """
-        INSERT OR REPLACE INTO nfl_games
+        INSERT INTO nfl_games
             (week, event_id, home_team, away_team, home_score, away_score, status, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT (week, event_id) DO UPDATE SET
+            home_team = EXCLUDED.home_team, away_team = EXCLUDED.away_team,
+            home_score = EXCLUDED.home_score, away_score = EXCLUDED.away_score,
+            status = EXCLUDED.status, updated_at = EXCLUDED.updated_at, stats_synced = 0
         """,
         game_rows,
     )
@@ -885,9 +990,12 @@ def sync_week_stats(db, week, force=False):
         if stat_rows:
             db.executemany(
                 """
-                INSERT OR REPLACE INTO player_week_stats
+                INSERT INTO player_week_stats
                     (week, player_id, pts_ppr, pts_half, pts_std, stat_line, game_status, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (week, player_id) DO UPDATE SET
+                    pts_ppr = EXCLUDED.pts_ppr, pts_half = EXCLUDED.pts_half, pts_std = EXCLUDED.pts_std,
+                    stat_line = EXCLUDED.stat_line, game_status = EXCLUDED.game_status, updated_at = EXCLUDED.updated_at
                 """,
                 stat_rows,
             )
@@ -1048,11 +1156,12 @@ def new_league():
         INSERT INTO leagues (name, num_teams, num_human_slots, num_ai_slots, scoring,
                               roster_settings, draft_type, commissioner_name, invite_code, league_format)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        RETURNING id
         """,
         (name, num_teams, num_human_slots, num_ai_slots, scoring, roster_settings,
          draft_type, commissioner_name, invite_code, league_format),
     )
-    league_id = cur.lastrowid
+    league_id = cur.fetchone()["id"]
 
     slot_index = 1
 
@@ -1061,10 +1170,11 @@ def new_league():
         INSERT INTO teams (league_id, slot_index, owner_type, status, team_name,
                             owner_name, is_commissioner)
         VALUES (?, ?, 'human', 'filled', ?, ?, 1)
+        RETURNING id
         """,
         (league_id, slot_index, commissioner_team_name or f"{commissioner_name}'s Team", commissioner_name),
     )
-    session[f"team_{league_id}"] = commish_cur.lastrowid
+    session[f"team_{league_id}"] = commish_cur.fetchone()["id"]
     slot_index += 1
 
     for _ in range(num_human_slots - 1):
@@ -1670,11 +1780,10 @@ def propose_trade(league_id):
         flash(message)
         return redirect(url_for("trades_page", league_id=league_id, partner_id=to_team_id))
 
-    db.execute(
-        "INSERT INTO trades (league_id, from_team_id, to_team_id, status) VALUES (?, ?, ?, 'pending')",
+    trade_id = db.execute(
+        "INSERT INTO trades (league_id, from_team_id, to_team_id, status) VALUES (?, ?, ?, 'pending') RETURNING id",
         (league_id, my_team_id, to_team_id),
-    )
-    trade_id = db.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
+    ).fetchone()["id"]
     for p in give_picks:
         db.execute(
             "INSERT INTO trade_items (trade_id, pick_id, from_team_id, player_name, position) VALUES (?, ?, ?, ?, ?)",
@@ -1924,7 +2033,7 @@ def players_list(league_id):
         conditions.append("position = ?")
         params.append(pos_filter)
     if search_query:
-        conditions.append("full_name LIKE ?")
+        conditions.append("full_name ILIKE ?")
         params.append(f"%{search_query}%")
     if conditions:
         query += " WHERE " + " AND ".join(conditions)
@@ -2732,11 +2841,10 @@ def maybe_ai_trade_offers(db, league_id):
             if not ok:
                 continue
 
-            db.execute(
-                "INSERT INTO trades (league_id, from_team_id, to_team_id, status) VALUES (?, ?, ?, 'pending')",
+            trade_id = db.execute(
+                "INSERT INTO trades (league_id, from_team_id, to_team_id, status) VALUES (?, ?, ?, 'pending') RETURNING id",
                 (league_id, ai_team["id"], target["id"]),
-            )
-            trade_id = db.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
+            ).fetchone()["id"]
             for p in give_picks:
                 db.execute(
                     "INSERT INTO trade_items (trade_id, pick_id, from_team_id, player_name, position) VALUES (?, ?, ?, ?, ?)",
