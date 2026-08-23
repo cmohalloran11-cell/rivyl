@@ -281,6 +281,18 @@ button, .btn, .btn-small, input, select {
   border-radius: 999px;
 }
 
+.hero-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.join-code-form { display: flex; gap: 8px; }
+.join-code-form input {
+  width: 170px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+@media (max-width: 480px) {
+  .hero-actions { flex-direction: column; align-items: stretch; }
+  .join-code-form input { width: auto; flex: 1; }
+}
+
 h1 { letter-spacing: -0.015em; font-weight: 800; }
 
 .subtitle { color: var(--text-dim); line-height: 1.55; max-width: 640px; font-size: 0.96rem; }

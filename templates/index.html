@@ -14,7 +14,13 @@
       <span class="hero-badge">🤖 Deterministic AI managers</span>
       <span class="hero-badge">⚡ Live draft room</span>
     </div>
-    <a class="btn" href="{{ url_for('new_league') }}">Create a League</a>
+    <div class="hero-actions">
+      <a class="btn" href="{{ url_for('new_league') }}">Create a League</a>
+      <form class="join-code-form" method="get" action="{{ url_for('join_by_code') }}">
+        <input type="text" name="code" placeholder="Enter invite code" maxlength="12" autocapitalize="characters">
+        <button class="btn btn-secondary" type="submit">Join a League</button>
+      </form>
+    </div>
   </div>
 
   <h2 class="section-title">Leagues {% if leagues %}<span class="hint" style="margin:0;">&middot; {{ leagues|length }}</span>{% endif %}</h2>

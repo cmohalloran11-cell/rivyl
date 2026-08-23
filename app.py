@@ -2216,10 +2216,21 @@ def fill_remaining_with_ai(league_id):
     return redirect(url_for("league_home", league_id=league_id))
 
 
+@app.route("/join")
+def join_by_code():
+    """Lets someone type just the short code (from the 'Join a League'
+    button) instead of needing the full invite link."""
+    code = request.args.get("code", "").strip().upper()
+    if not code:
+        flash("Enter an invite code.")
+        return redirect(url_for("index"))
+    return redirect(url_for("join_league", code=code))
+
+
 @app.route("/join/<code>", methods=["GET", "POST"])
 def join_league(code):
     db = get_db()
-    league = db.execute("SELECT * FROM leagues WHERE invite_code = ?", (code,)).fetchone()
+    league = db.execute("SELECT * FROM leagues WHERE invite_code = ?", (code.strip().upper(),)).fetchone()
     if league is None:
         flash("Invalid or expired invite link.")
         return redirect(url_for("index"))
