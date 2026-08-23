@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %}Draft &mdash; {{ league['name'] }}{% endblock %}
+{% block page_class %}page-wide{% endblock %}
+{% block content %}
+  <script id="draft-init" type="application/json">{{ state_json | safe }}</script>
+
+  <div class="draft-header">
+    <div>
+      <h1 id="draft-title">{{ league['name'] }} &mdash; Draft</h1>
+      <p class="subtitle" id="draft-round-header">Loading draft...</p>
+    </div>
+    <div class="speed-pill" id="draft-speed-pill"></div>
+  </div>
+
+  <div id="round-transition" class="round-transition hidden"></div>
+
+  <div class="draft-layout">
+    <aside class="draft-ticker-col">
+      <div class="draft-panel-label">Live Draft</div>
+      <div id="ticker" class="ticker"></div>
+    </aside>
+
+    <section class="draft-center-col">
+      <div class="card clock-card" id="clock-card">
+        <div id="clock-content"></div>
+      </div>
+
+      <div class="card">
+        <div class="filter-row">
+          <input type="text" id="player-search" placeholder="Search players...">
+        </div>
+        <div class="pos-tabs" id="pos-tabs">
+          <a class="pos-tab pos-tab-active" data-pos="">All</a>
+          <a class="pos-tab" data-pos="QB">QB</a>
+          <a class="pos-tab" data-pos="RB">RB</a>
+          <a class="pos-tab" data-pos="WR">WR</a>
+          <a class="pos-tab" data-pos="TE">TE</a>
+          <a class="pos-tab" data-pos="K">K</a>
+          <a class="pos-tab" data-pos="DEF">DEF</a>
+        </div>
+        <div class="player-table-wrap">
+          <table class="teams-table">
+            <thead>
+              <tr><th>Player</th><th>Pos</th><th>Team</th><th>Rank</th><th></th></tr>
+            </thead>
+            <tbody id="players-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <aside class="draft-teams-col">
+      <div class="draft-panel-label">Teams</div>
+      <div id="teams-panel"></div>
+    </aside>
+  </div>
+
+  <div id="completion-overlay" class="completion-overlay hidden">
+    <div class="completion-inner">
+      <h1>DRAFT COMPLETE 🏆</h1>
+      <div id="grades-content"></div>
+      <a class="btn btn-small" href="{{ url_for('league_home', league_id=league['id']) }}">Back to League</a>
+    </div>
+  </div>
+
+  <script src="{{ url_for('static', filename='draft.js') }}"></script>
+{% endblock %}

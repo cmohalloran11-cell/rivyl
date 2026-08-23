@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Join {{ league['name'] }}{% endblock %}
+{% block content %}
+  <h1>You're invited to {{ league['name'] }}</h1>
+
+  <div class="card">
+    <p class="subtitle">
+      Commissioner: {{ league['commissioner_name'] }}<br>
+      {{ league['num_teams'] }} teams &middot; {{ league['scoring'] }} &middot;
+      {{ league['roster_settings'] }} &middot; {{ league['draft_type'] }} draft
+    </p>
+
+    {% if open_slots > 0 %}
+      <p class="hint">{{ open_slots }} spot(s) remaining.</p>
+      <form class="form" method="post" action="{{ url_for('join_league', code=league['invite_code']) }}">
+        <label>Your name
+          <input type="text" name="owner_name" placeholder="Mike" required>
+        </label>
+        <label>Team name
+          <input type="text" name="team_name" placeholder="Mike's Team" required>
+        </label>
+        <button class="btn" type="submit">Join League</button>
+      </form>
+    {% else %}
+      <p class="hint hint-bad">This league is already full.</p>
+    {% endif %}
+  </div>
+
+  <a class="link-back" href="{{ url_for('league_home', league_id=league['id']) }}">View league home &rarr;</a>
+{% endblock %}

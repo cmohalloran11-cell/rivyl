@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Players &mdash; {{ league['name'] }}{% endblock %}
+{% block league_nav %}{{ macros.league_tabs(league, my_team_id, 'players') }}{% endblock %}
+{% block content %}
+  <h1>Players</h1>
+  <p class="subtitle">{{ league['name'] }} &middot; who owns whom, league-wide.</p>
+
+  <div class="card">
+    <form class="filter-row" method="get" action="{{ url_for('players_list', league_id=league['id']) }}">
+      <input type="text" name="q" placeholder="Search players..." value="{{ search_query }}">
+      {% if pos_filter %}<input type="hidden" name="pos" value="{{ pos_filter }}">{% endif %}
+      <input type="hidden" name="own" value="{{ own_filter }}">
+      <button class="btn btn-small" type="submit">Search</button>
+    </form>
+
+    <div class="pos-tabs">
+      <a class="pos-tab {% if own_filter == 'all' %}pos-tab-active{% endif %}"
+         href="{{ url_for('players_list', league_id=league['id'], pos=pos_filter, q=search_query, own='all') }}">All</a>
+      <a class="pos-tab {% if own_filter == 'available' %}pos-tab-active{% endif %}"
+         href="{{ url_for('players_list', league_id=league['id'], pos=pos_filter, q=search_query, own='available') }}">Available</a>
+      <a class="pos-tab {% if own_filter == 'rostered' %}pos-tab-active{% endif %}"
+         href="{{ url_for('players_list', league_id=league['id'], pos=pos_filter, q=search_query, own='rostered') }}">On Roster</a>
+    </div>
+
+    <div class="pos-tabs">
+      <a class="pos-tab {% if not pos_filter %}pos-tab-active{% endif %}"
+         href="{{ url_for('players_list', league_id=league['id'], q=search_query, own=own_filter) }}">All Pos</a>
+      {% for pos in position_order %}
+        <a class="pos-tab {% if pos_filter == pos %}pos-tab-active{% endif %}"
+           href="{{ url_for('players_list', league_id=league['id'], pos=pos, q=search_query, own=own_filter) }}">{{ pos }}</a>
+      {% endfor %}
+    </div>
+
+    <div class="player-table-wrap">
+      <table class="teams-table">
+        <thead>
+          <tr><th></th><th>Player</th><th>Team</th><th>Opp</th><th class="num">Rank</th><th class="num">Pos Rank</th><th class="num">Proj</th><th>Owner</th></tr>
+        </thead>
+        <tbody>
+          {% for row in rows %}
+            <tr>
+              <td>{{ macros.player_face(row) }}</td>
+              <td class="player-name-cell">
+                <span class="cell-flex">
+                  {{ row['player']['full_name'] }}
+                  <span class="badge badge-pos badge-pos-{{ row['player']['position'] }}">{{ row['player']['position'] }}</span>
+                  {% if row['injury_label'] %}<span class="badge badge-injury badge-injury-{{ row['injury_label'] }}">{{ row['injury_label'] }}</span>{% endif %}
+                </span>
+              </td>
+              <td>{{ row['player']['nfl_team'] or '—' }}</td>
+              <td>{{ row['opponent'] or '—' }}</td>
+              <td class="num">{{ row['player']['rank'] if row['player']['rank'] < 999999 else '—' }}</td>
+              <td class="num">{{ row['player']['pos_rank'] or '—' }}</td>
+              <td class="num proj-cell">{{ '%.1f'|format(row['proj']) if row['proj'] else '—' }}</td>
+              <td>
+                {% if row['owner_team'] %}
+                  <a class="week-matchup-team" href="{{ url_for('team_detail', league_id=league['id'], team_id=row['owner_team']['id']) }}">
+                    {{ row['owner_team']['team_name'] }}
+                    {% if row['owner_team']['owner_type'] == 'human' %}👤{% else %}🤖{% endif %}
+                  </a>
+                {% else %}
+                  <span class="cell-flex">
+                    <span class="badge badge-open">Free Agent</span>
+                    {% if league['draft_status'] == 'complete' and my_team_id %}
+                      <a class="link-back" href="{{ url_for('add_free_agent', league_id=league['id'], team_id=my_team_id, player_id=row['player']['id']) }}">+ Add</a>
+                    {% endif %}
+                  </span>
+                {% endif %}
+              </td>
+            </tr>
+          {% else %}
+            <tr><td colspan="8" class="row-open">No players match.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+{% endblock %}

@@ -1,0 +1,130 @@
+{% extends "base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Trades &mdash; {{ league['name'] }}{% endblock %}
+{% block league_nav %}{{ macros.league_tabs(league, my_team_id, 'trades') }}{% endblock %}
+{% block content %}
+  <h1>Trades</h1>
+  <p class="subtitle">Propose a trade with any team &mdash; AI managers evaluate and respond instantly, with their reasoning shown.</p>
+
+  {% if league['draft_status'] != 'complete' %}
+    <p class="empty-state">Trades open once the draft is complete.</p>
+  {% else %}
+
+    <h2 class="section-title">Propose a Trade</h2>
+    <div class="card">
+      <form class="form" method="get" action="{{ url_for('trades_page', league_id=league['id']) }}">
+        <label>Trade with
+          <select name="partner_id" onchange="this.form.submit()">
+            <option value="">Choose a team...</option>
+            {% for t in other_teams %}
+              <option value="{{ t['id'] }}" {% if partner and partner['id'] == t['id'] %}selected{% endif %}>
+                {{ t['team_name'] }}{% if t['owner_type'] == 'ai' %} (AI &mdash; {{ t['ai_personality'] }}){% endif %}
+              </option>
+            {% endfor %}
+          </select>
+        </label>
+      </form>
+
+      {% if partner %}
+        <form method="post" action="{{ url_for('propose_trade', league_id=league['id']) }}" style="margin-top:18px;">
+          <input type="hidden" name="to_team_id" value="{{ partner['id'] }}">
+          <div class="matchup-lineups">
+            <div>
+              <div class="invite-label">{% if my_team %}{{ macros.team_logo(my_team) }}{% endif %} You send</div>
+              <div class="roster-preview-list" style="margin-top:8px;">
+                {% for p in my_picks %}
+                  <label class="randomize-order-check">
+                    <input type="checkbox" name="give_pick_ids" value="{{ p['id'] }}">
+                    {{ p['player_name'] }}
+                    <span class="badge badge-pos badge-pos-{{ p['position'] }}">{{ p['position'] }}</span>
+                  </label>
+                {% else %}
+                  <p class="hint">No players on your roster.</p>
+                {% endfor %}
+              </div>
+            </div>
+            <div>
+              <div class="invite-label">{{ macros.team_logo(partner) }} You receive</div>
+              <div class="roster-preview-list" style="margin-top:8px;">
+                {% for p in partner_picks %}
+                  <label class="randomize-order-check">
+                    <input type="checkbox" name="receive_pick_ids" value="{{ p['id'] }}">
+                    {{ p['player_name'] }}
+                    <span class="badge badge-pos badge-pos-{{ p['position'] }}">{{ p['position'] }}</span>
+                  </label>
+                {% else %}
+                  <p class="hint">No players on their roster.</p>
+                {% endfor %}
+              </div>
+            </div>
+          </div>
+          <button class="btn btn-small" type="submit" style="margin-top:16px;">Propose Trade</button>
+        </form>
+      {% else %}
+        <p class="hint">Pick a team above to build an offer.</p>
+      {% endif %}
+    </div>
+
+    {% if incoming %}
+      <h2 class="section-title">Waiting on You</h2>
+      {% for t in incoming %}
+        <div class="card invite-card">
+          <div class="invite-label">
+            Offer from {{ t['from_name'] }}
+            {% if t['from_owner_type'] == 'ai' %}<span class="badge badge-ai">🤖 AI</span>{% endif %}
+          </div>
+          <p class="hint">
+            You'd receive: {% for i in t['give'] %}{{ i['player_name'] }} ({{ i['position'] }}){% if not loop.last %}, {% endif %}{% endfor %}<br>
+            You'd send: {% for i in t['receive'] %}{{ i['player_name'] }} ({{ i['position'] }}){% if not loop.last %}, {% endif %}{% endfor %}
+          </p>
+          <div class="invite-row">
+            <form method="post" action="{{ url_for('respond_trade', league_id=league['id'], trade_id=t['id']) }}">
+              <input type="hidden" name="action" value="accept">
+              <button class="btn btn-small" type="submit">Accept</button>
+            </form>
+            <form method="post" action="{{ url_for('respond_trade', league_id=league['id'], trade_id=t['id']) }}">
+              <input type="hidden" name="action" value="reject">
+              <button class="btn-delete-league" type="submit">Reject</button>
+            </form>
+          </div>
+        </div>
+      {% endfor %}
+    {% endif %}
+
+    {% if outgoing %}
+      <h2 class="section-title">Waiting on Them</h2>
+      {% for t in outgoing %}
+        <div class="card invite-card">
+          <div class="invite-label">Offer to {{ t['to_name'] }}</div>
+          <p class="hint">
+            You'd send: {% for i in t['give'] %}{{ i['player_name'] }} ({{ i['position'] }}){% if not loop.last %}, {% endif %}{% endfor %}<br>
+            You'd receive: {% for i in t['receive'] %}{{ i['player_name'] }} ({{ i['position'] }}){% if not loop.last %}, {% endif %}{% endfor %}
+          </p>
+          <form method="post" action="{{ url_for('cancel_trade', league_id=league['id'], trade_id=t['id']) }}">
+            <button class="btn-delete-league" type="submit">Cancel Offer</button>
+          </form>
+        </div>
+      {% endfor %}
+    {% endif %}
+
+    {% if history %}
+      <h2 class="section-title">Trade History</h2>
+      {% for t in history %}
+        <div class="card invite-card">
+          <div class="invite-label">
+            {{ t['from_name'] }} &harr; {{ t['to_name'] }}
+            {% if t['status'] == 'accepted' %}<span class="status-pill status-live">Accepted</span>
+            {% elif t['status'] == 'rejected' %}<span class="status-pill status-final">Rejected</span>
+            {% else %}<span class="status-pill status-scheduled">Cancelled</span>{% endif %}
+          </div>
+          <p class="hint">
+            {{ t['from_name'] }} sent: {% for i in t['give'] %}{{ i['player_name'] }}{% if not loop.last %}, {% endif %}{% endfor %}
+            &middot; {{ t['to_name'] }} sent: {% for i in t['receive'] %}{{ i['player_name'] }}{% if not loop.last %}, {% endif %}{% endfor %}
+            {% if t['ai_reason'] %}<br>{{ t['ai_reason'] }}{% endif %}
+          </p>
+        </div>
+      {% endfor %}
+    {% endif %}
+
+  {% endif %}
+{% endblock %}

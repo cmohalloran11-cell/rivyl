@@ -1,0 +1,127 @@
+{% extends "base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Home &mdash; {{ league['name'] }}{% endblock %}
+{% block league_nav %}{{ macros.league_tabs(league, my_team_id, 'home') }}{% endblock %}
+{% block content %}
+  <div class="week-banner">
+    <div>
+      <div class="week-banner-label">WEEK {{ league['current_week'] }}</div>
+      <div class="week-banner-league">{{ league['name'] }}</div>
+    </div>
+    {% if league['draft_status'] == 'not_started' %}
+      <span class="status-pill status-scheduled">Draft not started</span>
+    {% elif league['draft_status'] == 'in_progress' %}
+      <span class="status-pill status-live">Draft live</span>
+    {% else %}
+      <span class="status-pill status-scheduled">Season underway</span>
+    {% endif %}
+  </div>
+
+  {% if league['draft_status'] == 'not_started' %}
+    <div class="card">
+      <p class="hint">The draft hasn't started yet.</p>
+      <a class="btn btn-small" href="{{ url_for('league_home', league_id=league['id']) }}">Go set it up &rarr;</a>
+    </div>
+  {% elif league['draft_status'] == 'in_progress' %}
+    <div class="card">
+      <p class="hint">The draft is live right now.</p>
+      <a class="btn btn-small" href="{{ url_for('draft_room', league_id=league['id']) }}">Enter Draft Room &rarr;</a>
+    </div>
+  {% elif is_knockout %}
+    {% if my_team and knockout_status %}
+      <div class="card matchup-card">
+        <div class="invite-label">Knockout status</div>
+        <div class="matchup-row">
+          <div class="matchup-side">
+            <div class="clock-team">{{ macros.team_logo(my_team) }} {{ my_team['team_name'] }}</div>
+            <div class="matchup-score">{{ '%.1f'|format(knockout_status['score']) }}</div>
+          </div>
+          <div class="matchup-vs">{% if knockout_status['champion'] %}🏆{% else %}🔪{% endif %}</div>
+          <div class="matchup-side">
+            {% if knockout_status['champion'] %}
+              <div class="clock-team">Champion!</div>
+            {% elif not knockout_status['alive'] %}
+              <div class="clock-team">Eliminated</div>
+              <div class="matchup-proj-sub">Week {{ knockout_status['eliminated_week'] }}</div>
+            {% elif knockout_status['at_risk'] %}
+              <div class="clock-team">On the block</div>
+              <div class="matchup-proj-sub">Lowest score right now</div>
+            {% else %}
+              <div class="clock-team">Still alive</div>
+            {% endif %}
+          </div>
+        </div>
+        <a class="link-back" href="{{ url_for('matchup_detail', league_id=league['id']) }}">View full leaderboard &rarr;</a>
+      </div>
+    {% endif %}
+  {% else %}
+    {% if my_team %}
+      <div class="card matchup-card">
+        <div class="invite-label">Your matchup</div>
+        <div class="matchup-row">
+          <div class="matchup-side {% if opponent and my_live_score is not none and opp_live_score is not none and my_live_score > opp_live_score %}leading{% endif %}">
+            <div class="clock-team">{{ macros.team_logo(my_team) }} {{ my_team['team_name'] }}</div>
+            {{ macros.team_record(my_team) }}
+            {% if my_live_score is not none %}<div class="matchup-score">{{ '%.1f'|format(my_live_score) }}</div>{% endif %}
+          </div>
+          <div class="matchup-vs">VS</div>
+          <div class="matchup-side {% if opponent and my_live_score is not none and opp_live_score is not none and opp_live_score > my_live_score %}leading{% endif %}">
+            {% if opponent %}
+              <div class="clock-team">
+                {{ macros.team_logo(opponent) }}
+                {{ opponent['team_name'] }}
+                {% if opponent['owner_type'] == 'human' %}<span class="badge badge-human">👤</span>{% else %}<span class="badge badge-ai">🤖</span>{% endif %}
+              </div>
+              {{ macros.team_record(opponent) }}
+              {% if opp_live_score is not none %}<div class="matchup-score">{{ '%.1f'|format(opp_live_score) }}</div>{% endif %}
+            {% else %}
+              <div class="clock-team">BYE</div>
+            {% endif %}
+          </div>
+        </div>
+        <a class="link-back" href="{{ url_for('matchup_detail', league_id=league['id']) }}">View full matchup &rarr;</a>
+      </div>
+    {% endif %}
+  {% endif %}
+
+  {% if top_players %}
+    <h2 class="section-title">Your Top Starters</h2>
+    <div class="card">
+      <ul class="roster-preview-list">
+        {% for p in top_players %}
+          <li class="roster-preview-row">
+            {{ macros.player_face(p) }}
+            <span class="badge badge-pos badge-pos-{{ p['position'] }}">{{ p['position'] }}</span>
+            <span class="roster-preview-name">{{ p['player_name'] }}</span>
+            {% if p['injury_label'] %}<span class="badge badge-injury badge-injury-{{ p['injury_label'] }}">{{ p['injury_label'] }}</span>{% endif %}
+            <span class="roster-preview-proj">{{ p['opponent'] or '' }} &middot; {{ '%.1f'|format(p['proj']) if p['proj'] else '—' }} proj</span>
+          </li>
+        {% endfor %}
+      </ul>
+    </div>
+  {% endif %}
+
+  <h2 class="section-title">Jump To</h2>
+  <div class="home-grid">
+    <a class="card quick-link-card" href="{{ url_for('team_detail', league_id=league['id'], team_id=my_team_id) }}">
+      <div class="quick-link-title">📋 Roster</div>
+      <div class="quick-link-desc">Your starting lineup and bench</div>
+    </a>
+    <a class="card quick-link-card" href="{{ url_for('matchup_detail', league_id=league['id']) }}">
+      <div class="quick-link-title">⚔️ Matchup</div>
+      <div class="quick-link-desc">This week's head-to-head</div>
+    </a>
+    <a class="card quick-link-card" href="{{ url_for('players_list', league_id=league['id']) }}">
+      <div class="quick-link-title">👥 Players</div>
+      <div class="quick-link-desc">League-wide ownership</div>
+    </a>
+    <a class="card quick-link-card" href="{{ url_for('trades_page', league_id=league['id']) }}">
+      <div class="quick-link-title">🤝 Trades</div>
+      <div class="quick-link-desc">Propose and manage trades</div>
+    </a>
+    <a class="card quick-link-card" href="{{ url_for('league_home', league_id=league['id']) }}">
+      <div class="quick-link-title">🏆 League</div>
+      <div class="quick-link-desc">Standings and league settings</div>
+    </a>
+  </div>
+{% endblock %}

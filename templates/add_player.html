@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Add {{ player['full_name'] }} &mdash; {{ league['name'] }}{% endblock %}
+{% block league_nav %}{{ macros.league_tabs(league, my_team_id, 'players') }}{% endblock %}
+{% block content %}
+  <h1>Add {{ player['full_name'] }}</h1>
+  <p class="subtitle">
+    <span class="badge badge-pos badge-pos-{{ player['position'] }}">{{ player['position'] }}</span>
+    {{ player['nfl_team'] or 'Free Agent' }} &middot; onto {{ team['team_name'] }}
+  </p>
+
+  <form class="card form" method="post" action="{{ url_for('roster_move', league_id=league['id'], team_id=team['id']) }}">
+    <input type="hidden" name="add_player_id" value="{{ player['id'] }}">
+    <div class="invite-label">
+      {% if roster_full %}Your roster is full &mdash; choose who to drop{% else %}Drop a player, or add straight to your bench{% endif %}
+    </div>
+    <div class="form" style="gap:8px;">
+      {% if not roster_full %}
+        <label class="randomize-order-check">
+          <input type="radio" name="drop_pick_id" value="" checked>
+          Don't drop anyone &mdash; I have bench room
+        </label>
+      {% endif %}
+      {% for p in picks %}
+        <label class="randomize-order-check">
+          <input type="radio" name="drop_pick_id" value="{{ p['id'] }}" {% if roster_full and loop.first %}checked{% endif %}>
+          Drop {{ p['player_name'] }}
+          <span class="badge badge-pos badge-pos-{{ p['position'] }}">{{ p['position'] }}</span>
+        </label>
+      {% endfor %}
+    </div>
+    <button class="btn btn-small" type="submit" style="align-self:flex-start;">Confirm Add</button>
+  </form>
+
+  <a class="link-back" href="{{ url_for('players_list', league_id=league['id']) }}">&larr; Back to Players</a>
+{% endblock %}

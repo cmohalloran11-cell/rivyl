@@ -1,0 +1,256 @@
+{% extends "base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}{{ league['name'] }}{% endblock %}
+{% block league_nav %}{{ macros.league_tabs(league, my_team_id, 'league') }}{% endblock %}
+{% block content %}
+  <h1 class="cell-flex">
+    {{ league['name'] }}
+    {% if league['league_format'] != 'Redraft' %}
+      <span class="badge {% if is_knockout %}badge-ai{% else %}badge-human{% endif %}">
+        {% if is_knockout %}🔪{% else %}👑{% endif %} {{ league['league_format'] }}
+      </span>
+    {% endif %}
+  </h1>
+  <p class="subtitle">
+    {{ league['num_teams'] }} teams &middot; {{ league['scoring'] }} &middot;
+    {{ league['roster_settings'] }} &middot; {{ league['draft_type'] }} draft
+    &middot; Commissioner: {{ league['commissioner_name'] }}
+  </p>
+
+  <div class="card invite-card">
+    <div class="invite-label">Invite friends</div>
+    <div class="invite-row">
+      <input type="text" readonly value="{{ invite_url }}" id="invite_url" onclick="this.select()">
+      <button class="btn btn-small" onclick="copyInvite()">Copy Link</button>
+    </div>
+    {% if open_slots > 0 %}
+      <p class="hint">{{ open_slots }} human slot(s) still open.</p>
+      <form method="post" action="{{ url_for('fill_remaining_with_ai', league_id=league['id']) }}">
+        <button class="btn btn-secondary btn-small" type="submit">
+          Fill remaining {{ open_slots }} slot(s) with AI now
+        </button>
+      </form>
+    {% else %}
+      <p class="hint">League is full.</p>
+    {% endif %}
+  </div>
+
+  <div class="card invite-card">
+    <div class="invite-label">Draft</div>
+    {% if league['draft_status'] == 'not_started' %}
+      {% if open_slots > 0 %}
+        <p class="hint">Fill every slot before the draft can start.</p>
+      {% else %}
+        <form method="post" action="{{ url_for('start_draft', league_id=league['id']) }}" class="form draft-settings-form">
+          <div class="form-row">
+            <label>AI draft speed
+              <select name="ai_speed">
+                {% for speed in ai_speed_choices %}
+                  <option value="{{ speed }}" {% if speed == 'fast' %}selected{% endif %}>{{ ai_speed_labels[speed] }}</option>
+                {% endfor %}
+              </select>
+            </label>
+            <label>Your pick timer
+              <select name="human_timer_seconds">
+                {% for t in human_timer_choices %}
+                  <option value="{{ t }}" {% if t == 90 %}selected{% endif %}>{{ t }} seconds</option>
+                {% endfor %}
+              </select>
+            </label>
+          </div>
+          <label class="randomize-order-check">
+            <input type="checkbox" name="randomize_order" checked>
+            Randomize draft order (instead of invite/seating order)
+          </label>
+          <button class="btn btn-small" type="submit">Start Draft</button>
+        </form>
+      {% endif %}
+    {% elif league['draft_status'] == 'in_progress' %}
+      <p class="hint">Draft is live &mdash; pick {{ league['current_pick_index'] }} of {{ league['num_teams'] * league['rounds'] }}.</p>
+      <a class="btn btn-small" href="{{ url_for('draft_room', league_id=league['id']) }}">Go to Draft Room</a>
+    {% else %}
+      <p class="hint">Draft complete.</p>
+      <a class="btn btn-secondary btn-small" href="{{ url_for('draft_room', league_id=league['id']) }}">View Draft Results</a>
+    {% endif %}
+  </div>
+
+  {% if is_knockout and league['draft_status'] == 'complete' %}
+    <div class="card invite-card">
+      <div class="invite-label">
+        Week {{ league['current_week'] }} &mdash; Knockout
+        {% if week_status == 'final' %}<span class="status-pill status-final">Final</span>
+        {% elif week_status == 'live' %}<span class="status-pill status-live">Live</span>
+        {% else %}<span class="status-pill status-scheduled">Scheduled</span>{% endif %}
+      </div>
+      {% if knockout_champion %}
+        <p class="hint">🏆 <strong>{{ knockout_champion['team_name'] }}</strong> is the last team standing &mdash; champion!</p>
+      {% else %}
+        <div class="week-matchups">
+          {% for t in knockout_alive %}
+            <div class="week-matchup-row">
+              <a class="week-matchup-team" href="{{ url_for('team_detail', league_id=league['id'], team_id=t['id']) }}">
+                {{ macros.team_logo(t) }}
+                {{ t['team_name'] }}
+                {% if t['owner_type'] == 'human' %}👤{% else %}🤖{% endif %}
+              </a>
+              <span class="week-matchup-score">{{ '%.1f'|format(knockout_scores.get(t['id'], 0.0)) }}</span>
+              {% if loop.first %}<span class="badge badge-injury badge-injury-O">🔪 on the block</span>{% endif %}
+            </div>
+          {% endfor %}
+        </div>
+        <p class="hint">
+          {% if week_status == 'scheduled' %}Games haven't kicked off yet &mdash; the lowest score once everyone's final gets eliminated.
+          {% elif week_status == 'live' %}Live scores &mdash; lowest right now is on the chopping block.
+          {% else %}Week final &mdash; the lowest scorer has been eliminated.{% endif %}
+        </p>
+      {% endif %}
+    </div>
+  {% elif week_matchups %}
+    <div class="card invite-card">
+      <div class="invite-label">
+        Week {{ league['current_week'] }} matchups
+        {% if week_status == 'final' %}<span class="status-pill status-final">Final</span>
+        {% elif week_status == 'live' %}<span class="status-pill status-live">Live</span>
+        {% else %}<span class="status-pill status-scheduled">Scheduled</span>{% endif %}
+      </div>
+      <div class="week-matchups">
+        {% for m in week_matchups %}
+          <div class="week-matchup-row">
+            <a class="week-matchup-team" href="{{ url_for('team_detail', league_id=league['id'], team_id=m['team_a']['id']) }}">
+              {{ macros.team_logo(m['team_a']) }}
+              {{ m['team_a']['team_name'] }}
+              {% if m['team_a']['owner_type'] == 'human' %}👤{% else %}🤖{% endif %}
+              {{ macros.team_record(m['team_a']) }}
+            </a>
+            <span class="week-matchup-score">{{ '%.1f'|format(m['score_a']) }} &ndash; {{ '%.1f'|format(m['score_b']) }}</span>
+            {% if m['team_b'] %}
+              <a class="week-matchup-team" href="{{ url_for('team_detail', league_id=league['id'], team_id=m['team_b']['id']) }}">
+                {{ macros.team_record(m['team_b']) }}
+                {{ m['team_b']['team_name'] }}
+                {% if m['team_b']['owner_type'] == 'human' %}👤{% else %}🤖{% endif %}
+                {{ macros.team_logo(m['team_b']) }}
+              </a>
+            {% else %}
+              <span class="week-matchup-team">BYE</span>
+            {% endif %}
+          </div>
+        {% endfor %}
+      </div>
+      <p class="hint">
+        {% if week_status == 'scheduled' %}Games haven't kicked off yet &mdash; scores start updating once they do.
+        {% else %}Scores are real, pulled from live NFL box scores as games are played.{% endif %}
+      </p>
+    </div>
+  {% endif %}
+
+  {% if can_advance_week %}
+    <div class="card invite-card">
+      <div class="invite-label">Season</div>
+      <p class="hint">Week {{ league['current_week'] }} is final. Advance the league to Week {{ league['current_week'] + 1 }} when you're ready.</p>
+      <form method="post" action="{{ url_for('advance_week', league_id=league['id']) }}">
+        <button class="btn btn-small" type="submit">Advance to Week {{ league['current_week'] + 1 }}</button>
+      </form>
+    </div>
+  {% endif %}
+
+  {% if recent_moves %}
+    <div class="card invite-card">
+      <div class="invite-label">Recent Moves</div>
+      <div class="week-matchups">
+        {% for tx in recent_moves %}
+          <div class="week-matchup-row">
+            <span class="week-matchup-team" style="flex:0 0 auto;">{{ tx['team_name'] }}</span>
+            <span class="hint" style="text-align:right;flex:1;margin:0;">{{ tx['detail'] }}</span>
+          </div>
+        {% endfor %}
+      </div>
+    </div>
+  {% endif %}
+
+  <h2 class="section-title">Standings</h2>
+  <table class="teams-table">
+    <thead>
+      <tr>
+        <th>Rank</th>
+        <th>Team</th>
+        <th>Owner</th>
+        <th>Type</th>
+        <th class="num">{% if is_knockout %}Status{% else %}Record{% endif %}</th>
+        {% if not is_knockout %}
+          <th class="num">PF</th>
+          <th class="num">PA</th>
+        {% endif %}
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for team in standings_teams %}
+        <tr class="{% if team['status'] == 'open' %}row-open{% endif %}">
+          <td class="rank-cell {% if loop.index == 1 %}rank-1{% elif loop.index == 2 %}rank-2{% elif loop.index == 3 %}rank-3{% endif %}">{{ loop.index }}</td>
+          <td class="player-name-cell">
+            {% if team['status'] == 'open' %}
+              <span class="open-slot">Open slot &mdash; awaiting invite</span>
+            {% else %}
+              <span class="cell-flex">
+                {{ macros.team_logo(team) }}
+                {{ team['team_name'] }}
+                {% if team['is_commissioner'] %}<span class="tag-commish">Commissioner</span>{% endif %}
+              </span>
+            {% endif %}
+          </td>
+          <td>{{ team['owner_name'] or (team['ai_personality'] if team['owner_type'] == 'ai' else '—') }}</td>
+          <td>
+            {% if team['status'] == 'open' %}
+              <span class="badge badge-open">Open</span>
+            {% elif team['owner_type'] == 'human' %}
+              <span class="badge badge-human">👤 Human</span>
+            {% else %}
+              <span class="badge badge-ai">🤖 AI</span>
+            {% endif %}
+          </td>
+          {% if is_knockout %}
+            <td class="num">
+              {% if team['eliminated_week'] is none %}
+                {% if knockout_champion and knockout_champion['id'] == team['id'] %}
+                  <span class="badge badge-open">🏆 Champion</span>
+                {% else %}
+                  <span class="badge badge-open">Alive</span>
+                {% endif %}
+              {% else %}
+                <span class="badge badge-injury badge-injury-O">Out &mdash; Wk {{ team['eliminated_week'] }}</span>
+              {% endif %}
+            </td>
+          {% else %}
+            <td class="num stat-num">{{ team['wins'] }}-{{ team['losses'] }}</td>
+            <td class="num stat-num">{{ '%.1f'|format(pf_pa.get(team['id'], [0.0, 0.0])[0]) }}</td>
+            <td class="num stat-num">{{ '%.1f'|format(pf_pa.get(team['id'], [0.0, 0.0])[1]) }}</td>
+          {% endif %}
+          <td>
+            {% if team['status'] == 'filled' and league['draft_status'] != 'not_started' %}
+              <a class="link-back" href="{{ url_for('team_detail', league_id=league['id'], team_id=team['id']) }}">View &rarr;</a>
+            {% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  {% if can_delete %}
+    <h2 class="section-title">Danger Zone</h2>
+    <div class="card invite-card">
+      <p class="hint">Deleting a league permanently removes its draft, rosters, and schedule. This can't be undone.</p>
+      <form method="post" action="{{ url_for('delete_league', league_id=league['id']) }}"
+            onsubmit="return confirm('Delete &quot;{{ league['name'] }}&quot;? This permanently removes the draft, rosters, and schedule.');">
+        <button class="btn-delete-league" type="submit">Delete this league</button>
+      </form>
+    </div>
+  {% endif %}
+
+  <script>
+    function copyInvite() {
+      const el = document.getElementById('invite_url');
+      el.select();
+      navigator.clipboard.writeText(el.value);
+    }
+  </script>
+{% endblock %}

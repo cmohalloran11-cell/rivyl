@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}RIVYL{% endblock %}
+{% block content %}
+  <div class="hero">
+    <div class="hero-kicker">RIVYL</div>
+    <h1>Build your team. Beat your rivals.</h1>
+    <p class="subtitle">
+      You don't have to find 9 people to play fantasy football. Create a league,
+      invite whoever's actually free, and autonomous AI managers take every seat
+      that's left.
+    </p>
+    <div class="hero-badges">
+      <span class="hero-badge">🏈 Real NFL stats &amp; scoring</span>
+      <span class="hero-badge">🤖 Deterministic AI managers</span>
+      <span class="hero-badge">⚡ Live draft room</span>
+    </div>
+    <a class="btn" href="{{ url_for('new_league') }}">Create a League</a>
+  </div>
+
+  <h2 class="section-title">Leagues {% if leagues %}<span class="hint" style="margin:0;">&middot; {{ leagues|length }}</span>{% endif %}</h2>
+
+  {% if leagues %}
+    <div class="league-grid">
+      {% for league in leagues %}
+        <div class="league-card">
+          <a class="league-card-link" href="{{ url_for('league_home', league_id=league['id']) }}">
+            <div class="cell-flex">
+              <span class="league-card-name">{{ league['name'] }}</span>
+              {% if league['league_format'] and league['league_format'] != 'Redraft' %}
+                <span class="badge {% if league['league_format'] == 'Knockout' %}badge-ai{% else %}badge-human{% endif %}">
+                  {% if league['league_format'] == 'Knockout' %}🔪{% else %}👑{% endif %} {{ league['league_format'] }}
+                </span>
+              {% endif %}
+            </div>
+            <div class="league-card-meta">
+              {{ league['num_teams'] }} teams &middot; {{ league['scoring'] }} &middot; {{ league['draft_type'] }} draft
+            </div>
+            <div class="league-card-meta">Commissioner: {{ league['commissioner_name'] }}</div>
+            {% if league['open_slots'] > 0 %}
+              <span class="badge badge-open">{{ league['open_slots'] }} spot(s) open</span>
+            {% else %}
+              <span class="badge badge-full">Full</span>
+            {% endif %}
+          </a>
+          {% if league['id'] in deletable_ids %}
+            <form class="league-card-delete-form" method="post" action="{{ url_for('delete_league', league_id=league['id']) }}"
+                  onsubmit="return confirm('Delete &quot;{{ league['name'] }}&quot;? This permanently removes the draft, rosters, and schedule.');">
+              <button class="btn-delete-league" type="submit">Delete league</button>
+            </form>
+          {% endif %}
+        </div>
+      {% endfor %}
+    </div>
+  {% else %}
+    <p class="empty-state">No leagues yet. Create the first one to get started.</p>
+  {% endif %}
+{% endblock %}

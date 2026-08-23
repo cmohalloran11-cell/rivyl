@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+{% block title %}Create League{% endblock %}
+{% block content %}
+  <h1>Create a League</h1>
+  <p class="subtitle">Pick your settings. Any seats you don't assign to humans are filled by AI managers automatically.</p>
+
+  <form class="card form" method="post" action="{{ url_for('new_league') }}">
+    <label>League name
+      <input type="text" name="league_name" placeholder="The Boys League" required>
+    </label>
+
+    <div class="form-row">
+      <label>Your name
+        <input type="text" name="commissioner_name" placeholder="Chris" required>
+      </label>
+      <label>Your team name
+        <input type="text" name="commissioner_team_name" placeholder="Optional">
+      </label>
+    </div>
+
+    <div class="form-row">
+      <label>Number of teams
+        <select name="num_teams" id="num_teams">
+          {% for n in team_count_choices %}
+            <option value="{{ n }}" {% if n == 10 %}selected{% endif %}>{{ n }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Scoring
+        <select name="scoring">
+          {% for s in scoring_choices %}
+            <option value="{{ s }}">{{ s }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Draft type
+        <select name="draft_type">
+          {% for d in draft_type_choices %}
+            <option value="{{ d }}">{{ d }}</option>
+          {% endfor %}
+        </select>
+      </label>
+    </div>
+
+    <label>League format
+      <select name="league_format" id="league_format">
+        {% for f in league_format_choices %}
+          <option value="{{ f }}">{{ f }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <p class="hint" id="format_hint"></p>
+
+    <label>Roster settings
+      <input type="text" name="roster_settings" placeholder="Standard (1QB/2RB/2WR/1TE/1FLEX/1DST/1K)">
+    </label>
+
+    <div class="form-row">
+      <label>Human players (including you)
+        <input type="number" name="num_human_slots" id="num_human_slots" min="1" value="4">
+      </label>
+      <label>AI teams
+        <input type="number" name="num_ai_slots" id="num_ai_slots" min="0" value="6">
+      </label>
+    </div>
+    <p class="hint" id="slot_hint">Human + AI must add up to the number of teams.</p>
+
+    <button class="btn" type="submit">Create League</button>
+  </form>
+
+  <script>
+    const formatEl = document.getElementById('league_format');
+    const formatHintEl = document.getElementById('format_hint');
+    const FORMAT_HINTS = {
+      Redraft: 'Classic season — new draft, head-to-head matchups, standard rosters.',
+      Dynasty: 'Same head-to-head season, but with a much deeper roster (25 rounds) for long-term stashes.',
+      Knockout: 'No head-to-head schedule — every week the lowest scorer is eliminated until one champion remains.',
+    };
+    function syncFormatHint() {
+      formatHintEl.textContent = FORMAT_HINTS[formatEl.value] || '';
+    }
+    formatEl.addEventListener('change', syncFormatHint);
+    syncFormatHint();
+
+    const teamsEl = document.getElementById('num_teams');
+    const humanEl = document.getElementById('num_human_slots');
+    const aiEl = document.getElementById('num_ai_slots');
+    const hintEl = document.getElementById('slot_hint');
+
+    function syncAi() {
+      const teams = parseInt(teamsEl.value, 10);
+      const humans = parseInt(humanEl.value, 10) || 0;
+      const ai = Math.max(teams - humans, 0);
+      aiEl.value = ai;
+      hintEl.textContent = `${humans} human + ${ai} AI = ${humans + ai} of ${teams} teams.`;
+      hintEl.classList.toggle('hint-bad', humans + ai !== teams);
+    }
+
+    teamsEl.addEventListener('change', syncAi);
+    humanEl.addEventListener('input', syncAi);
+    aiEl.addEventListener('input', () => {
+      const teams = parseInt(teamsEl.value, 10);
+      const ai = parseInt(aiEl.value, 10) || 0;
+      hintEl.textContent = `${humanEl.value} human + ${ai} AI = ${(parseInt(humanEl.value, 10) || 0) + ai} of ${teams} teams.`;
+      hintEl.classList.toggle('hint-bad', (parseInt(humanEl.value, 10) || 0) + ai !== teams);
+    });
+    syncAi();
+  </script>
+{% endblock %}

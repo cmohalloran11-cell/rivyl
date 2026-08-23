@@ -1,0 +1,200 @@
+{% extends "base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Matchup &mdash; {{ league['name'] }}{% endblock %}
+{% block league_nav %}{{ macros.league_tabs(league, my_team_id, 'matchup') }}{% endblock %}
+{% block content %}
+  <h1>{% if is_knockout %}You vs. the Field{% else %}Matchup{% endif %}</h1>
+
+  {% if league['draft_status'] != 'complete' %}
+    <p class="empty-state">Matchups start once the draft is complete.</p>
+  {% elif not left %}
+    <p class="empty-state">No matchup scheduled this week.</p>
+  {% else %}
+    {% if not is_knockout %}
+      <div class="matchup-nav">
+        <a class="matchup-nav-arrow" href="{{ url_for('matchup_detail', league_id=league['id'], matchup_id=prev_matchup_id) }}" aria-label="Previous matchup">&larr;</a>
+        <p class="subtitle matchup-nav-label">
+          Week {{ league['current_week'] }} &middot; Matchup {{ matchup_index }} of {{ matchup_count }}
+          &middot;
+          {% if week_status == 'final' %}<span class="status-pill status-final">Final</span>
+          {% elif week_status == 'live' %}<span class="status-pill status-live">Live</span>
+          {% else %}<span class="status-pill status-scheduled">Scheduled</span>{% endif %}
+        </p>
+        <a class="matchup-nav-arrow" href="{{ url_for('matchup_detail', league_id=league['id'], matchup_id=next_matchup_id) }}" aria-label="Next matchup">&rarr;</a>
+      </div>
+    {% else %}
+      <p class="subtitle" style="text-align:center;">
+        Week {{ league['current_week'] }} &middot; Knockout
+        &middot;
+        {% if week_status == 'final' %}<span class="status-pill status-final">Final</span>
+        {% elif week_status == 'live' %}<span class="status-pill status-live">Live</span>
+        {% else %}<span class="status-pill status-scheduled">Scheduled</span>{% endif %}
+      </p>
+    {% endif %}
+
+    <div class="card matchup-card">
+      <div class="matchup-row">
+        <div class="matchup-side {% if right and left_score > right_score %}leading{% endif %}">
+          <div class="clock-team">
+            {{ macros.team_logo(left, 'md') }}
+            {{ left['team_name'] }}
+            {% if left['owner_type'] == 'human' %}<span class="badge badge-human">👤 {{ left['owner_name'] }}</span>{% else %}<span class="badge badge-ai">🤖 AI</span>{% endif %}
+          </div>
+          {% if not is_knockout %}{{ macros.team_record(left) }}{% endif %}
+          <div class="matchup-score">{{ '%.1f'|format(left_score) }}</div>
+          {% if not is_knockout %}<div class="matchup-proj-sub">Proj {{ '%.1f'|format(left_projection) }}</div>{% endif %}
+        </div>
+        {% if is_knockout %}
+          <div class="matchup-vs">
+            {% if knockout_champion %}🏆{% else %}🔪{% endif %}
+          </div>
+          <div class="matchup-side">
+            {% if knockout_champion and knockout_champion['id'] == left['id'] %}
+              <div class="clock-team">Champion!</div>
+            {% elif left['eliminated_week'] %}
+              <div class="clock-team">Eliminated</div>
+              <div class="matchup-proj-sub">Week {{ left['eliminated_week'] }}</div>
+            {% elif knockout_alive and knockout_alive[0]['id'] == left['id'] %}
+              <div class="clock-team">On the block</div>
+              <div class="matchup-proj-sub">Lowest score right now</div>
+            {% else %}
+              <div class="clock-team">Still alive</div>
+              <div class="matchup-proj-sub">{{ knockout_alive|length }} teams remaining</div>
+            {% endif %}
+          </div>
+        {% else %}
+          <div class="matchup-vs">VS</div>
+          <div class="matchup-side {% if right and right_score > left_score %}leading{% endif %}">
+            {% if right %}
+              <div class="clock-team">
+                {{ macros.team_logo(right, 'md') }}
+                {{ right['team_name'] }}
+                {% if right['owner_type'] == 'human' %}<span class="badge badge-human">👤 {{ right['owner_name'] }}</span>{% else %}<span class="badge badge-ai">🤖 AI</span>{% endif %}
+              </div>
+              {{ macros.team_record(right) }}
+              <div class="matchup-score">{{ '%.1f'|format(right_score) }}</div>
+              <div class="matchup-proj-sub">Proj {{ '%.1f'|format(right_projection) }}</div>
+            {% else %}
+              <div class="clock-team">BYE</div>
+            {% endif %}
+          </div>
+        {% endif %}
+      </div>
+      <p class="hint">
+        {% if is_knockout %}
+          {% if week_status == 'scheduled' %}Games haven't kicked off yet, so score is 0. Lowest score once the week's final gets eliminated.
+          {% elif week_status == 'live' %}Live score from real NFL box scores &mdash; lowest right now is on the chopping block.
+          {% else %}Final score from real NFL box scores.{% endif %}
+        {% else %}
+          {% if week_status == 'scheduled' %}Games haven't kicked off yet, so score is 0.{% elif week_status == 'live' %}Score updates live from real NFL box scores.{% else %}Final score from real NFL box scores.{% endif %}
+          Proj is a pre-game estimate.
+        {% endif %}
+      </p>
+    </div>
+
+    {% if is_knockout %}
+      <h2 class="section-title">Knockout Leaderboard</h2>
+      <div class="card">
+        <div class="week-matchups">
+          {% for t in knockout_alive %}
+            <div class="week-matchup-row {% if t['id'] == left['id'] %}leading{% endif %}">
+              <a class="week-matchup-team" href="{{ url_for('team_detail', league_id=league['id'], team_id=t['id']) }}">
+                {{ macros.team_logo(t) }} {{ t['team_name'] }}
+              </a>
+              <span class="week-matchup-score">{{ '%.1f'|format(knockout_scores.get(t['id'], 0.0)) }}</span>
+              {% if loop.first and not knockout_champion %}<span class="badge badge-injury badge-injury-O">🔪</span>{% endif %}
+            </div>
+          {% endfor %}
+        </div>
+        {% if knockout_eliminated %}
+          <p class="hint" style="margin-top:10px;">
+            Eliminated: {% for t in knockout_eliminated %}{{ t['team_name'] }} (Wk {{ t['eliminated_week'] }}){% if not loop.last %}, {% endif %}{% endfor %}
+          </p>
+        {% endif %}
+      </div>
+
+      <h2 class="section-title">Your Lineup</h2>
+      <table class="teams-table">
+        <thead><tr><th>Slot</th><th></th><th>Player</th><th>Opp</th><th class="num">Proj</th></tr></thead>
+        <tbody>
+          {% for p in left_starters %}
+            <tr class="{% if not p['player_name'] %}row-open{% endif %}">
+              <td><span class="badge badge-pos">{{ p['slot'] }}</span></td>
+              {% if p['player_name'] %}
+                <td>{{ macros.player_face(p) }}</td>
+                <td class="player-name-cell">
+                  <span class="cell-flex">
+                    {{ p['player_name'] }}
+                    <span class="badge badge-pos badge-pos-{{ p['position'] }}">{{ p['position'] }}</span>
+                    {% if p['injury_label'] %}<span class="badge badge-injury badge-injury-{{ p['injury_label'] }}">{{ p['injury_label'] }}</span>{% endif %}
+                  </span>
+                </td>
+                <td>{{ p['opponent'] or '—' }}</td>
+                <td class="num proj-cell">{{ '%.1f'|format(p['proj']) if p['proj'] else '—' }}</td>
+              {% else %}
+                <td colspan="3" class="open-slot">Empty</td>
+              {% endif %}
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% elif right %}
+      <div class="matchup-lineups">
+        <div>
+          <h2 class="section-title">{{ left['team_name'] }}</h2>
+          <table class="teams-table">
+            <thead><tr><th>Slot</th><th></th><th>Player</th><th>Opp</th><th class="num">Proj</th></tr></thead>
+            <tbody>
+              {% for p in left_starters %}
+                <tr class="{% if not p['player_name'] %}row-open{% endif %}">
+                  <td><span class="badge badge-pos">{{ p['slot'] }}</span></td>
+                  {% if p['player_name'] %}
+                    <td>{{ macros.player_face(p) }}</td>
+                    <td class="player-name-cell">
+                      <span class="cell-flex">
+                        {{ p['player_name'] }}
+                        <span class="badge badge-pos badge-pos-{{ p['position'] }}">{{ p['position'] }}</span>
+                        {% if p['injury_label'] %}<span class="badge badge-injury badge-injury-{{ p['injury_label'] }}">{{ p['injury_label'] }}</span>{% endif %}
+                      </span>
+                    </td>
+                    <td>{{ p['opponent'] or '—' }}</td>
+                    <td class="num proj-cell">{{ '%.1f'|format(p['proj']) if p['proj'] else '—' }}</td>
+                  {% else %}
+                    <td colspan="3" class="open-slot">Empty</td>
+                  {% endif %}
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        <div>
+          <h2 class="section-title">{{ right['team_name'] }}</h2>
+          <table class="teams-table">
+            <thead><tr><th>Slot</th><th></th><th>Player</th><th>Opp</th><th class="num">Proj</th></tr></thead>
+            <tbody>
+              {% for p in right_starters %}
+                <tr class="{% if not p['player_name'] %}row-open{% endif %}">
+                  <td><span class="badge badge-pos">{{ p['slot'] }}</span></td>
+                  {% if p['player_name'] %}
+                    <td>{{ macros.player_face(p) }}</td>
+                    <td class="player-name-cell">
+                      <span class="cell-flex">
+                        {{ p['player_name'] }}
+                        <span class="badge badge-pos badge-pos-{{ p['position'] }}">{{ p['position'] }}</span>
+                        {% if p['injury_label'] %}<span class="badge badge-injury badge-injury-{{ p['injury_label'] }}">{{ p['injury_label'] }}</span>{% endif %}
+                      </span>
+                    </td>
+                    <td>{{ p['opponent'] or '—' }}</td>
+                    <td class="num proj-cell">{{ '%.1f'|format(p['proj']) if p['proj'] else '—' }}</td>
+                  {% else %}
+                    <td colspan="3" class="open-slot">Empty</td>
+                  {% endif %}
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    {% endif %}
+  {% endif %}
+{% endblock %}
