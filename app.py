@@ -151,6 +151,10 @@ AI_MOVES_INTERVAL_SECONDS = 6 * 60 * 60
 # Trades -- how much value (same curve) an AI team will accept losing in a
 # trade before it's no longer a "fair enough" deal for that team to accept.
 TRADE_VALUE_TOLERANCE = 0.15
+# Roughly the rank a competent starter at each position should beat in a
+# typical league -- used to size how badly a team needs (or doesn't need)
+# a position when evaluating a trade, not just the raw value chart.
+TRADE_REPLACEMENT_RANK = {"QB": 18, "RB": 30, "WR": 36, "TE": 15, "K": 15, "DEF": 15}
 SLEEPER_PLAYERS_URL = "https://api.sleeper.app/v1/players/nfl"
 RANKINGS_PATH = Path(__file__).parent / "data" / "rankings_top500.json"
 POSITION_ORDER = ["QB", "RB", "WR", "TE", "K", "DEF"]
@@ -3121,11 +3125,46 @@ def execute_trade_swap(db, league_id, from_team_id, to_team_id, give_picks, rece
         db.execute("UPDATE draft_picks SET team_id = ?, lineup_slot = 'BN' WHERE id = ?", (from_team_id, p["id"]))
 
 
-def evaluate_trade_for_ai(ai_team, give_picks, receive_picks):
+def positional_scarcity_multiplier(roster_picks, position, exclude_id=None):
+    """How thin a team is at a position (ignoring `exclude_id`, the player
+    under evaluation) -- sizes a trade-value premium so a real roster hole
+    matters, not just the raw trade-value chart. Applies the same way
+    whether the player is coming in (fills the hole) or going out (leaves
+    one): no depth at all is worth the most, a starter below replacement
+    level still some, an already-solid starter gets no premium either way."""
+    at_position = [p for p in roster_picks if p["position"] == position and p["id"] != exclude_id]
+    best_rank = min(
+        (p["player_rank"] for p in at_position if p["player_rank"] is not None),
+        default=None,
+    )
+    if best_rank is None:
+        return 1.6
+    if best_rank >= TRADE_REPLACEMENT_RANK.get(position, 30):
+        return 1.25
+    return 1.0
+
+
+def evaluate_trade_for_ai(ai_team, roster_picks, give_picks, receive_picks):
     """give_picks: players the AI would RECEIVE. receive_picks: players the AI
-    would GIVE UP. Pure value-curve comparison -- no LLM, no randomness."""
-    gets_value = sum(player_trade_value(p["player_rank"]) for p in give_picks)
-    gives_value = sum(player_trade_value(p["player_rank"]) for p in receive_picks)
+    would GIVE UP. Value-curve comparison, adjusted for how much the team
+    actually needs (or doesn't need) each position right now -- e.g. a
+    lower-ranked player who'd become their new starting QB is worth more to
+    a team with no real option there than the trade chart alone says, and a
+    player who's their only competent option at a position is harder to
+    pry loose than pure market value would suggest."""
+    gets_value = 0.0
+    need_notes = []
+    for p in give_picks:
+        mult = positional_scarcity_multiplier(roster_picks, p["position"])
+        gets_value += player_trade_value(p["player_rank"]) * mult
+        if mult > 1.0:
+            need_notes.append(p["position"])
+
+    gives_value = sum(
+        player_trade_value(p["player_rank"])
+        * positional_scarcity_multiplier(roster_picks, p["position"], exclude_id=p["id"])
+        for p in receive_picks
+    )
 
     tolerance = TRADE_VALUE_TOLERANCE
     personality = ai_team["ai_personality"]
@@ -3138,8 +3177,9 @@ def evaluate_trade_for_ai(ai_team, give_picks, receive_picks):
     accept = gets_value >= gives_value * (1 - tolerance)
     gets_names = ", ".join(p["player_name"] for p in give_picks)
     gives_names = ", ".join(p["player_name"] for p in receive_picks)
+    need_phrase = f" — badly needed at {'/'.join(sorted(set(need_notes)))}" if need_notes else ""
     if accept:
-        reason = f"Accepted — getting {gets_names} outweighs giving up {gives_names} (value {gets_value:.0f} vs {gives_value:.0f})."
+        reason = f"Accepted — getting {gets_names} outweighs giving up {gives_names} (value {gets_value:.0f} vs {gives_value:.0f}){need_phrase}."
     else:
         reason = f"Rejected — not enough coming back for {gives_names} (value {gets_value:.0f} vs {gives_value:.0f})."
     return accept, reason
@@ -3274,7 +3314,8 @@ def resolve_trade(db, league_id, trade_id, action=None, resolver="human"):
     reason = None
     if resolver == "ai":
         to_team = db.execute("SELECT * FROM teams WHERE id = ?", (trade["to_team_id"],)).fetchone()
-        accept, reason = evaluate_trade_for_ai(to_team, give_picks, receive_picks)
+        roster_picks = get_roster_picks(db, league_id, trade["to_team_id"])
+        accept, reason = evaluate_trade_for_ai(to_team, roster_picks, give_picks, receive_picks)
     else:
         accept = action == "accept"
 
