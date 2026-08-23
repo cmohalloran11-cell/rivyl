@@ -1,5 +1,6 @@
 import hashlib
 import json
+import math
 import os
 import random
 import re
@@ -329,14 +330,23 @@ GRADE_THRESHOLDS = [
 # Pre-game projection only -- a deterministic point estimate from draft rank,
 # same idea as every fantasy site's "projected points" column. Kept separate
 # from real scoring below: this never claims to be a result, only an estimate.
+# "peak" is what a rank-1 player at the position projects for; "decay" sets
+# how fast that falls off as rank gets worse -- a real per-position falloff
+# curve, not a flat floor every player at the position gets regardless of
+# rank. A deep bench QB or a team's WR5 should project near zero, the way
+# they actually would if they don't see the field.
 PROJECTION_MODEL = {
-    "QB": {"base": 13.0, "rank_bonus": 7.5},
-    "RB": {"base": 7.0, "rank_bonus": 8.5},
-    "WR": {"base": 6.5, "rank_bonus": 8.5},
-    "TE": {"base": 4.5, "rank_bonus": 5.5},
-    "K": {"base": 6.0, "rank_bonus": 2.0},
-    "DEF": {"base": 6.0, "rank_bonus": 2.5},
+    "QB": {"peak": 20.5, "decay": 45},
+    "RB": {"peak": 15.5, "decay": 65},
+    "WR": {"peak": 15.0, "decay": 75},
+    "TE": {"peak": 10.0, "decay": 40},
+    "K": {"peak": 8.0, "decay": 35},
+    "DEF": {"peak": 8.5, "decay": 35},
 }
+# Rank stand-in for a player with no real ranking at all (missing from the
+# board entirely) -- far enough past replacement level at any position that
+# the decay curve puts them at essentially zero, not some arbitrary midpoint.
+UNRANKED_PROJECTION_RANK = 400
 PPR_PROJECTION_BONUS = {"Standard": 0.0, "Half PPR": 1.0, "Full PPR": 2.0}
 # Pass-catching positions that benefit from PPR scoring -- distinct from
 # FLEX_ELIGIBLE (a roster-slot rule); TE catches passes but doesn't flex here.
@@ -609,6 +619,9 @@ def init_db():
         },
         "nfl_games": {
             "stats_synced": "ALTER TABLE nfl_games ADD COLUMN stats_synced INTEGER NOT NULL DEFAULT 0",
+        },
+        "trades": {
+            "parent_trade_id": "ALTER TABLE trades ADD COLUMN parent_trade_id INTEGER",
         },
     }
     for table, columns in table_migrations.items():
@@ -2411,17 +2424,29 @@ def stable_unit(seed_str):
     return int(digest[:8], 16) / 0xFFFFFFFF
 
 
-def get_available_players(db, league_id, scoring="Standard"):
+def get_available_players(db, league_id, scoring="Standard", roster_config=None):
+    """roster_config, if given, excludes any position the league has zero
+    starter slots for (e.g. a no-kicker league) from the board entirely --
+    not just from draft requirements."""
     col = RANK_COLUMN_BY_SCORING.get(scoring, "rank_half")
+    params = [league_id]
+    exclude_clause = ""
+    if roster_config is not None:
+        excluded_positions = [pos for pos in POSITION_ORDER if roster_config.get(pos, 0) == 0]
+        if excluded_positions:
+            placeholders = ",".join("?" * len(excluded_positions))
+            exclude_clause = f"AND position NOT IN ({placeholders})"
+            params.extend(excluded_positions)
     return db.execute(
         f"""
         SELECT *, {col} AS rank FROM players
         WHERE id NOT IN (
             SELECT player_id FROM draft_picks WHERE league_id = ? AND player_id IS NOT NULL
         )
+        {exclude_clause}
         ORDER BY {col} ASC
         """,
-        (league_id,),
+        params,
     ).fetchall()
 
 
@@ -2588,7 +2613,10 @@ def get_forced_positions(position_counts, current_round, total_rounds, starter_r
 
 
 def execute_pick_for_team(db, league_id, pick_row, team_row, scoring, personality=None, is_autopick=False, forced_player_id=None):
-    available = get_available_players(db, league_id, scoring)
+    league = db.execute("SELECT * FROM leagues WHERE id = ?", (league_id,)).fetchone()
+    roster_config = get_roster_config(league)
+
+    available = get_available_players(db, league_id, scoring, roster_config)
     if not available:
         return None
 
@@ -2602,8 +2630,6 @@ def execute_pick_for_team(db, league_id, pick_row, team_row, scoring, personalit
     ]
     pool = within_cap or available
 
-    league = db.execute("SELECT * FROM leagues WHERE id = ?", (league_id,)).fetchone()
-    roster_config = get_roster_config(league)
     starter_requirements = roster_starter_requirements(roster_config)
     forced = get_forced_positions(position_counts, pick_row["round"], league["rounds"], starter_requirements)
     if forced:
@@ -2975,7 +3001,8 @@ def ensure_ai_teams_optimal(db, league_id):
     if not ai_teams:
         return
 
-    starter_requirements = roster_starter_requirements(get_roster_config(league))
+    roster_config = get_roster_config(league)
+    starter_requirements = roster_starter_requirements(roster_config)
     for team in ai_teams:
         picks = get_roster_picks(db, league_id, team["id"])
         counts = {}
@@ -2985,7 +3012,7 @@ def ensure_ai_teams_optimal(db, league_id):
         if not missing:
             continue
 
-        available = get_available_players(db, league_id, league["scoring"])
+        available = get_available_players(db, league_id, league["scoring"], roster_config)
         for pos in missing:
             best = next((p for p in available if p["position"] == pos), None)
             if best is None:
@@ -3029,9 +3056,10 @@ def maybe_ai_roster_moves(db, league_id):
         "SELECT * FROM teams WHERE league_id = ? AND owner_type = 'ai' AND status = 'filled'",
         (league_id,),
     ).fetchall()
+    roster_config = get_roster_config(league)
 
     for team in ai_teams:
-        available = get_available_players(db, league_id, league["scoring"])
+        available = get_available_players(db, league_id, league["scoring"], roster_config)
         if not available:
             continue
         picks = get_roster_picks(db, league_id, team["id"])
@@ -3226,6 +3254,38 @@ def find_ai_trade_offer(ai_team, ai_picks, target_picks, starter_requirements):
     return best_give, want
 
 
+def generate_ai_counter_offer(ai_team, roster_picks, proposer_roster_picks, give_picks, receive_picks):
+    """When an AI rejects a trade, see if a small adjustment would make it
+    work, instead of just leaving the proposer with a dead end. give_picks:
+    players the AI would receive. receive_picks: players the AI would give
+    up. Tries the smallest change that flips the AI's own evaluation to an
+    accept: first sweetening the offer with one more (cheapest-first) player
+    from the proposer's roster, then trimming the most expensive item off
+    what the AI would have to give up. Returns (new_give_picks,
+    new_receive_picks, note) or None if nothing reasonable closes the gap."""
+    involved_ids = {p["id"] for p in give_picks} | {p["id"] for p in receive_picks}
+
+    sweeten_pool = sorted(
+        [p for p in proposer_roster_picks if p["id"] not in involved_ids],
+        key=lambda p: player_trade_value(p["player_rank"]),
+    )
+    for extra in sweeten_pool:
+        candidate_give = give_picks + [extra]
+        accept, _ = evaluate_trade_for_ai(ai_team, roster_picks, candidate_give, receive_picks)
+        if accept:
+            return candidate_give, receive_picks, f"added {extra['player_name']} to sweeten it"
+
+    if len(receive_picks) > 1:
+        by_value_desc = sorted(receive_picks, key=lambda p: player_trade_value(p["player_rank"]), reverse=True)
+        for drop in by_value_desc:
+            candidate_receive = [p for p in receive_picks if p["id"] != drop["id"]]
+            accept, _ = evaluate_trade_for_ai(ai_team, roster_picks, give_picks, candidate_receive)
+            if accept:
+                return give_picks, candidate_receive, f"dropped {drop['player_name']} from the ask"
+
+    return None
+
+
 def maybe_ai_trade_offers(db, league_id):
     """Lets AI teams shop trades to human teams too, not just respond to
     them -- throttled the same way as waiver moves, and capped at one
@@ -3312,6 +3372,7 @@ def resolve_trade(db, league_id, trade_id, action=None, resolver="human"):
         return False, message
 
     reason = None
+    roster_picks = None
     if resolver == "ai":
         to_team = db.execute("SELECT * FROM teams WHERE id = ?", (trade["to_team_id"],)).fetchone()
         roster_picks = get_roster_picks(db, league_id, trade["to_team_id"])
@@ -3320,12 +3381,61 @@ def resolve_trade(db, league_id, trade_id, action=None, resolver="human"):
         accept = action == "accept"
 
     if not accept:
-        db.execute(
-            "UPDATE trades SET status = 'rejected', ai_reason = ?, resolved_at = datetime('now') WHERE id = ?",
-            (reason, trade_id),
+        counter = None
+        if resolver == "ai":
+            proposer_roster = get_roster_picks(db, league_id, trade["from_team_id"])
+            counter = generate_ai_counter_offer(to_team, roster_picks, proposer_roster, give_picks, receive_picks)
+
+        if counter is None:
+            db.execute(
+                "UPDATE trades SET status = 'rejected', ai_reason = ?, resolved_at = datetime('now') WHERE id = ?",
+                (reason, trade_id),
+            )
+            db.commit()
+            return True, "Trade rejected."
+
+        counter_give, counter_receive, note = counter
+        # Sanity-check the counter the same way a human-submitted trade would
+        # be (roster caps, ownership) before offering it back -- reversed,
+        # since the AI is now the proposer: give_pick_ids must be picks the
+        # AI (from_team_id here) owns, i.e. what it's giving up.
+        ok, _, counter_receive, counter_give = validate_trade_legality(
+            db, league, trade["to_team_id"], trade["from_team_id"],
+            [p["id"] for p in counter_receive], [p["id"] for p in counter_give],
         )
+        if not ok:
+            db.execute(
+                "UPDATE trades SET status = 'rejected', ai_reason = ?, resolved_at = datetime('now') WHERE id = ?",
+                (reason, trade_id),
+            )
+            db.commit()
+            return True, "Trade rejected."
+
+        counter_reason = f"{reason} Countered — {note}."
+        db.execute(
+            "UPDATE trades SET status = 'countered', ai_reason = ?, resolved_at = datetime('now') WHERE id = ?",
+            (counter_reason, trade_id),
+        )
+        counter_id = db.execute(
+            "INSERT INTO trades (league_id, from_team_id, to_team_id, status, ai_reason, parent_trade_id) "
+            "VALUES (?, ?, ?, 'pending', ?, ?) RETURNING id",
+            (league_id, trade["to_team_id"], trade["from_team_id"], f"Countered — {note}.", trade_id),
+        ).fetchone()["id"]
+        # In the counter, the AI (now from_team_id) gives what it was asked
+        # to give up (counter_receive) and asks for what it wanted to
+        # receive (counter_give) -- items are tagged by who gives them up.
+        for p in counter_receive:
+            db.execute(
+                "INSERT INTO trade_items (trade_id, pick_id, from_team_id, player_name, position) VALUES (?, ?, ?, ?, ?)",
+                (counter_id, p["id"], trade["to_team_id"], p["player_name"], p["position"]),
+            )
+        for p in counter_give:
+            db.execute(
+                "INSERT INTO trade_items (trade_id, pick_id, from_team_id, player_name, position) VALUES (?, ?, ?, ?, ?)",
+                (counter_id, p["id"], trade["from_team_id"], p["player_name"], p["position"]),
+            )
         db.commit()
-        return True, "Trade rejected."
+        return True, f"Trade rejected — {to_team['team_name']} sent a counter-offer instead."
 
     execute_trade_swap(db, league_id, trade["from_team_id"], trade["to_team_id"], give_picks, receive_picks)
     db.execute(
@@ -3625,12 +3735,16 @@ def player_projection(position, rank, scoring):
     cfg = PROJECTION_MODEL.get(position)
     if cfg is None:
         return None
-    rank = rank if isinstance(rank, int) and rank < 999999 else 150
-    rank_factor = max(0.0, 1 - (rank / 220))
-    proj = cfg["base"] + cfg["rank_bonus"] * rank_factor
+    rank = rank if isinstance(rank, int) and rank < 999999 else UNRANKED_PROJECTION_RANK
+    # Exponential falloff from the position's peak, not an additive floor --
+    # a rank-1 player projects near the peak, and projections keep dropping
+    # the deeper the rank goes instead of leveling off at a guaranteed
+    # minimum. Every bench/deep player naturally lands near zero.
+    decay_factor = math.exp(-max(0, rank - 1) / cfg["decay"])
+    proj = cfg["peak"] * decay_factor
     if position in PPR_BONUS_POSITIONS:
-        proj += PPR_PROJECTION_BONUS.get(scoring, 0.0)
-    return round(proj, 1)
+        proj += PPR_PROJECTION_BONUS.get(scoring, 0.0) * decay_factor
+    return round(max(0.0, proj), 1)
 
 
 def with_projections(rows, scoring, schedule_map=None):
@@ -3738,7 +3852,7 @@ def build_state(league_id):
                 "nfl_team": p["nfl_team"], "search_rank": p["rank"],
                 "years_exp": p["years_exp"],
             }
-            for p in get_available_players(db, league_id, league["scoring"])[:200]
+            for p in get_available_players(db, league_id, league["scoring"], roster_config)[:200]
         ]
 
     grades = json.loads(league["grades_json"]) if league["grades_json"] else None

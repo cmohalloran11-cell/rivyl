@@ -70,12 +70,13 @@
       {% for t in incoming %}
         <div class="card invite-card">
           <div class="invite-label">
-            Offer from {{ t['from_name'] }}
+            {% if t['parent_trade_id'] %}Countered offer{% else %}Offer{% endif %} from {{ t['from_name'] }}
             {% if t['from_owner_type'] == 'ai' %}<span class="badge badge-ai">🤖 AI</span>{% endif %}
           </div>
           <p class="hint">
             You'd receive: {% for i in t['give'] %}{{ i['player_name'] }} ({{ i['position'] }}){% if not loop.last %}, {% endif %}{% endfor %}<br>
             You'd send: {% for i in t['receive'] %}{{ i['player_name'] }} ({{ i['position'] }}){% if not loop.last %}, {% endif %}{% endfor %}
+            {% if t['ai_reason'] %}<br>{{ t['ai_reason'] }}{% endif %}
           </p>
           <div class="invite-row">
             <form method="post" action="{{ url_for('respond_trade', league_id=league['id'], trade_id=t['id']) }}">
@@ -115,6 +116,7 @@
             {{ t['from_name'] }} &harr; {{ t['to_name'] }}
             {% if t['status'] == 'accepted' %}<span class="status-pill status-live">Accepted</span>
             {% elif t['status'] == 'rejected' %}<span class="status-pill status-final">Rejected</span>
+            {% elif t['status'] == 'countered' %}<span class="status-pill status-scheduled">Countered</span>
             {% else %}<span class="status-pill status-scheduled">Cancelled</span>{% endif %}
           </div>
           <p class="hint">
