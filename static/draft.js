@@ -1,15 +1,8 @@
 (function () {
-  const SPEED_RANGES = {
-    instant: [0, 0],
-    fast: [600, 1800],
-    realistic: [1000, 4000],
-    slow: [3000, 8000],
-  };
   const NEED_TARGETS = { QB: 3, RB: 6, WR: 7, TE: 3, K: 1, DEF: 1 };
   const ROSTER_POSITION_ORDER = ['QB', 'RB', 'WR', 'TE', 'K', 'DEF'];
   const STARTER_REQUIREMENTS = { QB: 1, RB: 2, WR: 2, TE: 1, K: 1, DEF: 1 };
   const FLEX_ELIGIBLE = ['RB', 'WR'];
-  const REVEAL_PAUSE_MS = 260;
   const ROUND_TRANSITION_MS = 900;
 
   let state = JSON.parse(document.getElementById('draft-init').textContent);
@@ -17,7 +10,6 @@
   let filterPos = '';
   let filterQuery = '';
   let lastRenderedRound = state.on_the_clock ? state.on_the_clock.round : null;
-  let busy = false;
   let activeSubtab = 'players';
 
   const el = {
@@ -86,11 +78,6 @@
 
   function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
-  }
-
-  function speedDelay(speed) {
-    const [a, b] = SPEED_RANGES[speed] || SPEED_RANGES.fast;
-    return a + Math.random() * (b - a);
   }
 
   async function fetchJSON(url, opts) {
@@ -452,59 +439,40 @@
   }
 
   async function tick() {
-    if (busy) return;
     stopPolling();
     if (state.league.draft_status !== 'in_progress' || !state.on_the_clock) {
       render(state);
       return;
     }
-
-    const onClock = state.on_the_clock;
-
-    if (onClock.owner_type === 'human') {
-      render(state);
-      pollHumanTurn(onClock.overall_pick);
-      return;
-    }
-
     render(state);
-    const delay = speedDelay(state.league.ai_speed);
-    busy = true;
-    await sleep(delay);
-    const newState = await fetchJSON(state.urls.advance, { method: 'POST' });
-    busy = false;
-
-    const prevRound = lastRenderedRound;
-    lastRenderedRound = newState.on_the_clock ? newState.on_the_clock.round : prevRound;
-    state = newState;
-    render(state);
-
-    if (newState.on_the_clock && prevRound && newState.on_the_clock.round > prevRound) {
-      await maybeShowRoundTransition(newState.on_the_clock.round);
-    } else {
-      await sleep(REVEAL_PAUSE_MS);
-    }
-    tick();
+    pollDraftClock(state.on_the_clock.overall_pick);
   }
 
-  function pollHumanTurn(watchOverallPick) {
+  function pollDraftClock(watchOverallPick) {
     stopPolling();
     pollInterval = setInterval(async () => {
-      // POST to /draft/advance rather than GET /draft/state: only the advance
-      // endpoint actually checks & enforces the pick deadline server-side.
-      // Every browser in the room polls here while waiting, so whichever one
-      // ticks past the deadline first is the one that triggers the auto-pick
-      // -- otherwise a stalled human pick could hang the draft forever.
+      // POST to /draft/advance every second, whether the current pick is an
+      // AI's or a human's -- the server decides what happens (pace + execute
+      // the AI pick once its "ready at" time passes, or auto-draft a human
+      // whose deadline expired). Every browser in the room polls the same
+      // way, so pacing is the same no matter how many tabs are watching, and
+      // a human's timer only starts counting down once their turn has
+      // genuinely arrived -- not once some other slower/faster tab notices.
       const s = await fetchJSON(state.urls.advance, { method: 'POST' });
+      if (s.on_the_clock && s.on_the_clock.team_id === state.my_team_id) paintTimer(s.remaining_seconds);
       if (s.league.draft_status !== 'in_progress' || !s.on_the_clock || s.on_the_clock.overall_pick !== watchOverallPick) {
         stopPolling();
+        const prevRound = lastRenderedRound;
         lastRenderedRound = s.on_the_clock ? s.on_the_clock.round : lastRenderedRound;
         state = s;
+        render(state);
+        if (s.on_the_clock && prevRound && s.on_the_clock.round > prevRound) {
+          await maybeShowRoundTransition(s.on_the_clock.round);
+        }
         tick();
         return;
       }
       state.remaining_seconds = s.remaining_seconds;
-      if (s.on_the_clock.team_id === state.my_team_id) paintTimer(s.remaining_seconds);
     }, 1000);
   }
 

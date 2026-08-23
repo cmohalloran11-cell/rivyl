@@ -178,6 +178,19 @@ AI_SPEED_LABELS = {
     "realistic": "Realistic — 1-4s",
     "slow": "Slow — 3-8s",
 }
+# Server-side mirror of the pacing above -- AI picks used to be paced only by
+# each connected browser's own setTimeout loop, which meant more people
+# watching the draft made AI picks resolve faster (every browser was racing
+# to be the one whose poll executed the pick), and a human's turn could start
+# counting down before their own tab had caught up, silently burning their
+# timer. Now the server decides when an AI pick is allowed to fire, so pacing
+# is the same no matter how many tabs are open.
+AI_SPEED_RANGES = {
+    "instant": (0, 0),
+    "fast": (0.6, 1.8),
+    "realistic": (1, 4),
+    "slow": (3, 8),
+}
 HUMAN_TIMER_CHOICES = [30, 60, 90, 120]
 
 # FLEX is a roster SLOT that an RB or WR can fill -- not a position of its own.
@@ -562,6 +575,7 @@ def init_db():
             "current_week": "ALTER TABLE leagues ADD COLUMN current_week INTEGER NOT NULL DEFAULT 1",
             "ai_moves_at": "ALTER TABLE leagues ADD COLUMN ai_moves_at REAL",
             "ai_trade_offers_at": "ALTER TABLE leagues ADD COLUMN ai_trade_offers_at REAL",
+            "ai_ready_at": "ALTER TABLE leagues ADD COLUMN ai_ready_at REAL",
             "league_format": "ALTER TABLE leagues ADD COLUMN league_format TEXT NOT NULL DEFAULT 'Redraft'",
             "roster_config_json": "ALTER TABLE leagues ADD COLUMN roster_config_json TEXT",
         },
@@ -2660,7 +2674,7 @@ def advance_after_pick(db, league_id, from_index):
 
     if next_index > total_picks:
         cur = db.execute(
-            "UPDATE leagues SET current_pick_index = ?, draft_status = 'complete', pick_deadline = NULL, current_week = 1 WHERE id = ? AND current_pick_index = ?",
+            "UPDATE leagues SET current_pick_index = ?, draft_status = 'complete', pick_deadline = NULL, ai_ready_at = NULL, current_week = 1 WHERE id = ? AND current_pick_index = ?",
             (next_index, league_id, from_index),
         )
         if cur.rowcount == 0:
@@ -2673,7 +2687,7 @@ def advance_after_pick(db, league_id, from_index):
     next_pick = get_current_pick_row(db, league_id, next_index)
     deadline = time.time() + league["human_timer_seconds"] if next_pick["owner_type"] == "human" else None
     cur = db.execute(
-        "UPDATE leagues SET current_pick_index = ?, pick_deadline = ? WHERE id = ? AND current_pick_index = ?",
+        "UPDATE leagues SET current_pick_index = ?, pick_deadline = ?, ai_ready_at = NULL WHERE id = ? AND current_pick_index = ?",
         (next_index, deadline, league_id, from_index),
     )
     if cur.rowcount == 0:
@@ -2712,6 +2726,40 @@ def maybe_auto_draft_timeout(db, league_id):
         db, league_id, pick_row, team_row, league["scoring"],
         personality=None, is_autopick=True, forced_player_id=forced_player_id,
     ) is None:
+        return
+    db.commit()
+    advance_after_pick(db, league_id, league["current_pick_index"])
+
+
+def maybe_execute_ai_pick(db, league_id):
+    """Server-authoritative AI pacing: an AI's turn doesn't execute the
+    instant it's polled -- it schedules a "ready at" time (using the same
+    speed ranges the UI used to sleep through client-side) and only actually
+    drafts once that's passed. Safe to call from many polling clients at
+    once, so the pace is the same no matter how many tabs are watching."""
+    league = db.execute("SELECT * FROM leagues WHERE id = ?", (league_id,)).fetchone()
+    if league is None or league["draft_status"] != "in_progress":
+        return
+
+    pick_row = get_current_pick_row(db, league_id, league["current_pick_index"])
+    if pick_row is None or pick_row["owner_type"] != "ai" or pick_row["player_id"] is not None:
+        return
+
+    if league["ai_ready_at"] is None:
+        lo, hi = AI_SPEED_RANGES.get(league["ai_speed"], AI_SPEED_RANGES["fast"])
+        ready_at = time.time() + lo + random.random() * (hi - lo)
+        db.execute(
+            "UPDATE leagues SET ai_ready_at = ? WHERE id = ? AND current_pick_index = ? AND ai_ready_at IS NULL",
+            (ready_at, league_id, league["current_pick_index"]),
+        )
+        db.commit()
+        return
+
+    if time.time() < league["ai_ready_at"]:
+        return
+
+    team_row = db.execute("SELECT * FROM teams WHERE id = ?", (pick_row["team_id"],)).fetchone()
+    if execute_pick_for_team(db, league_id, pick_row, team_row, league["scoring"], personality=team_row["ai_personality"]) is None:
         return
     db.commit()
     advance_after_pick(db, league_id, league["current_pick_index"])
@@ -3776,15 +3824,7 @@ def draft_state(league_id):
 def draft_advance(league_id):
     db = get_db()
     maybe_auto_draft_timeout(db, league_id)
-    league = db.execute("SELECT * FROM leagues WHERE id = ?", (league_id,)).fetchone()
-
-    if league is not None and league["draft_status"] == "in_progress":
-        pick_row = get_current_pick_row(db, league_id, league["current_pick_index"])
-        if pick_row is not None and pick_row["owner_type"] == "ai" and pick_row["player_id"] is None:
-            team_row = db.execute("SELECT * FROM teams WHERE id = ?", (pick_row["team_id"],)).fetchone()
-            if execute_pick_for_team(db, league_id, pick_row, team_row, league["scoring"], personality=team_row["ai_personality"]):
-                db.commit()
-                advance_after_pick(db, league_id, league["current_pick_index"])
+    maybe_execute_ai_pick(db, league_id)
 
     state = build_state(league_id)
     if state is None:
