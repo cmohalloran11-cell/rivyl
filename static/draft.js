@@ -12,7 +12,6 @@
 
   let state = JSON.parse(document.getElementById('draft-init').textContent);
   let pollInterval = null;
-  let countdownInterval = null;
   let filterPos = '';
   let filterQuery = '';
   let lastRenderedRound = state.on_the_clock ? state.on_the_clock.round : null;
@@ -131,8 +130,17 @@
     }).join('');
   }
 
+  function paintTimer(seconds) {
+    const timerEl = document.getElementById('human-timer');
+    if (!timerEl || typeof seconds !== 'number') return;
+    const remaining = Math.max(0, Math.round(seconds));
+    const m = Math.floor(remaining / 60);
+    const s = remaining % 60;
+    timerEl.textContent = `${m}:${String(s).padStart(2, '0')}`;
+    timerEl.classList.toggle('timer-low', remaining <= 10);
+  }
+
   function renderClock() {
-    stopCountdown();
     const { league, on_the_clock: onClock } = state;
 
     if (league.draft_status === 'complete') {
@@ -145,6 +153,7 @@
     }
 
     const team = state.teams.find((t) => t.id === onClock.team_id);
+    const isMe = onClock.team_id === state.my_team_id;
     const upNext = state.picks
       .filter((p) => !p.player_id && p.overall_pick > onClock.overall_pick)
       .slice(0, 5);
@@ -164,41 +173,20 @@
       `;
     } else {
       el.clockContent.innerHTML = `
-        <div class="invite-label">You're on the clock</div>
+        <div class="invite-label">${isMe ? "You're on the clock" : 'On the clock'}</div>
         <div class="clock-team">${ownerIcon('human')} ${displayName(onClock)}</div>
         <div class="hint">Round ${onClock.round}, Pick ${onClock.pick_in_round} (overall #${onClock.overall_pick})</div>
-        <div class="human-timer" id="human-timer">--:--</div>
+        ${isMe ? '<div class="human-timer" id="human-timer">--:--</div>' : '<div class="hint">Waiting for their pick&hellip;</div>'}
         ${team ? `<div class="need-panel">${needBars(team)}</div>` : ''}
         ${upNext.length ? `<div class="up-next"><div class="invite-label">Up next</div><ul>${upNextHtml}</ul></div>` : ''}
       `;
-      startCountdown(state.remaining_seconds || 0);
+      if (isMe) paintTimer(state.remaining_seconds || 0);
     }
-  }
-
-  function startCountdown(seconds) {
-    let remaining = Math.max(0, Math.round(seconds));
-    const timerEl = document.getElementById('human-timer');
-    function paint() {
-      const m = Math.floor(remaining / 60);
-      const s = remaining % 60;
-      if (timerEl) {
-        timerEl.textContent = `${m}:${String(s).padStart(2, '0')}`;
-        timerEl.classList.toggle('timer-low', remaining <= 10);
-      }
-    }
-    paint();
-    countdownInterval = setInterval(() => {
-      remaining = Math.max(0, remaining - 1);
-      paint();
-    }, 1000);
-  }
-
-  function stopCountdown() {
-    if (countdownInterval) { clearInterval(countdownInterval); countdownInterval = null; }
   }
 
   function renderPlayers() {
-    const canPick = state.league.draft_status === 'in_progress' && state.on_the_clock && state.on_the_clock.owner_type === 'human';
+    const canPick = state.league.draft_status === 'in_progress' && state.on_the_clock
+      && state.on_the_clock.owner_type === 'human' && state.on_the_clock.team_id === state.my_team_id;
     const q = filterQuery.trim().toLowerCase();
     const rows = state.available_players
       .filter((p) => (!filterPos || p.position === filterPos))
@@ -343,14 +331,7 @@
         return;
       }
       state.remaining_seconds = s.remaining_seconds;
-      const timerEl = document.getElementById('human-timer');
-      if (timerEl && typeof s.remaining_seconds === 'number') {
-        const remaining = s.remaining_seconds;
-        const m = Math.floor(remaining / 60);
-        const sec = remaining % 60;
-        timerEl.textContent = `${m}:${String(sec).padStart(2, '0')}`;
-        timerEl.classList.toggle('timer-low', remaining <= 10);
-      }
+      if (s.on_the_clock.team_id === state.my_team_id) paintTimer(s.remaining_seconds);
     }, 1000);
   }
 

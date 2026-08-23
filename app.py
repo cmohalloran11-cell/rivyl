@@ -3301,6 +3301,7 @@ def build_state(league_id):
             "rounds": league["rounds"], "total_picks": total_picks,
             "ai_speed": league["ai_speed"], "human_timer_seconds": league["human_timer_seconds"],
         },
+        "my_team_id": get_my_team_id(league_id, teams_rows),
         "on_the_clock": on_the_clock,
         "remaining_seconds": remaining_seconds,
         "picks": picks,
@@ -3444,6 +3445,13 @@ def draft_pick(league_id):
 
     if pick_row is None or pick_row["owner_type"] != "human" or pick_row["player_id"] is not None:
         return jsonify({"error": "not_your_turn", **build_state(league_id)}), 409
+
+    # Whoever is on the clock is a *human team*, but that doesn't mean it's
+    # THIS browser's team -- without this check, any visitor watching the
+    # draft room could submit a pick on behalf of whichever human happens to
+    # be up, which is exactly what was happening.
+    if session.get(f"team_{league_id}") != pick_row["team_id"]:
+        return jsonify({"error": "not_your_turn", **build_state(league_id)}), 403
 
     player = db.execute(
         """
