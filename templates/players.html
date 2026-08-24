@@ -52,7 +52,7 @@
               <td>{{ row['opponent'] or '—' }}</td>
               <td class="num">{{ row['player']['rank'] if row['player']['rank'] < 999999 else '—' }}</td>
               <td class="num">{{ row['player']['pos_rank'] or '—' }}</td>
-              <td class="num proj-cell">{{ '%.1f'|format(row['proj']) if row['proj'] else '—' }}</td>
+              <td class="num proj-cell">{{ '%.1f'|format(row['proj']) if row['proj'] is not none else '—' }}</td>
               <td>
                 {% if row['owner_team'] %}
                   <a class="week-matchup-team" href="{{ url_for('team_detail', league_id=league['id'], team_id=row['owner_team']['id']) }}">

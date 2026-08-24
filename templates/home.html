@@ -94,7 +94,7 @@
             <span class="badge badge-pos badge-pos-{{ p['position'] }}">{{ p['position'] }}</span>
             <span class="roster-preview-name">{{ p['player_name'] }}</span>
             {% if p['injury_label'] %}<span class="badge badge-injury badge-injury-{{ p['injury_label'] }}">{{ p['injury_label'] }}</span>{% endif %}
-            <span class="roster-preview-proj">{{ p['opponent'] or '' }} &middot; {{ '%.1f'|format(p['proj']) if p['proj'] else '—' }} proj</span>
+            <span class="roster-preview-proj">{{ p['opponent'] or '' }} &middot; {{ '%.1f'|format(p['proj']) if p['proj'] is not none else '—' }} proj</span>
           </li>
         {% endfor %}
       </ul>

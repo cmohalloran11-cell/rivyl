@@ -333,15 +333,26 @@ GRADE_THRESHOLDS = [
 # "peak" is what a rank-1 player at the position projects for; "decay" sets
 # how fast that falls off as rank gets worse -- a real per-position falloff
 # curve, not a flat floor every player at the position gets regardless of
-# rank. A deep bench QB or a team's WR5 should project near zero, the way
-# they actually would if they don't see the field.
+# rank, so a deep bench player projects near zero instead of a guaranteed
+# minimum.
+#
+# `rank` here is the OVERALL board rank (1-500 across every position, not a
+# per-position rank), and where a position's own depth falls on that shared
+# scale varies enormously -- e.g. in the bundled board a "last realistic
+# starter" QB (QB12) sits around overall rank 96, while a "last realistic
+# starter" K (K12) sits around overall rank 283. Each decay is calibrated so
+# that anchor point (that position's ~12th-best, i.e. one per team in a
+# 12-team league) lands at half the position's peak: decay = (anchor_rank -
+# 1) / ln(2). Using one flat decay for every position (an earlier version of
+# this) crushed positions like QB/TE/K/DEF, whose useful players run much
+# deeper into the overall rank scale than RB/WR's do.
 PROJECTION_MODEL = {
-    "QB": {"peak": 20.5, "decay": 45},
-    "RB": {"peak": 15.5, "decay": 65},
-    "WR": {"peak": 15.0, "decay": 75},
-    "TE": {"peak": 10.0, "decay": 40},
-    "K": {"peak": 8.0, "decay": 35},
-    "DEF": {"peak": 8.5, "decay": 35},
+    "QB": {"peak": 20.5, "decay": 137},
+    "RB": {"peak": 15.5, "decay": 74},
+    "WR": {"peak": 15.0, "decay": 82},
+    "TE": {"peak": 10.0, "decay": 186},
+    "K": {"peak": 8.0, "decay": 407},
+    "DEF": {"peak": 8.5, "decay": 391},
 }
 # Rank stand-in for a player with no real ranking at all (missing from the
 # board entirely) -- far enough past replacement level at any position that
@@ -601,6 +612,7 @@ def init_db():
             "rank_std": "ALTER TABLE players ADD COLUMN rank_std INTEGER NOT NULL DEFAULT 999999",
             "pos_rank": "ALTER TABLE players ADD COLUMN pos_rank TEXT",
             "tier": "ALTER TABLE players ADD COLUMN tier INTEGER",
+            "depth_chart_order": "ALTER TABLE players ADD COLUMN depth_chart_order INTEGER",
         },
         "draft_picks": {
             "player_rank": "ALTER TABLE draft_picks ADD COLUMN player_rank INTEGER",
@@ -685,11 +697,13 @@ def sync_players(db, force=False):
                 continue
             key = (normalize_player_name(full_name), pos)
             years_exp = p.get("years_exp")
+            depth_chart_order = p.get("depth_chart_order")
             entry = {
                 "id": pid,
                 "team": p.get("team"),
                 "years_exp": years_exp if isinstance(years_exp, int) else 0,
                 "injury_status": p.get("injury_status") or None,
+                "depth_chart_order": depth_chart_order if isinstance(depth_chart_order, int) else None,
             }
             # Prefer an active (rostered-to-a-team) match if several share a name.
             existing = sleeper_by_key.get(key)
@@ -708,22 +722,23 @@ def sync_players(db, force=False):
 
         if pos == "DEF":
             player_id = f"DEF-{team or name}"
-            years_exp, injury_status = 0, None
+            years_exp, injury_status, depth_chart_order = 0, None, None
         else:
             match = sleeper_by_key.get((normalize_player_name(name), pos))
             if match:
                 player_id = match["id"]
                 team = match["team"] or team
                 years_exp, injury_status = match["years_exp"], match["injury_status"]
+                depth_chart_order = match["depth_chart_order"]
             else:
                 player_id = f"GEN-{normalize_player_name(name)}-{pos}"
-                years_exp, injury_status = 0, None
+                years_exp, injury_status, depth_chart_order = 0, None, None
 
         rows.append((
             player_id, name, pos, team,
             r["rank_half"], years_exp, injury_status,
             r["rank_ppr"], r["rank_half"], r["rank_std"],
-            r.get("pos_rank"), r.get("tier"),
+            r.get("pos_rank"), r.get("tier"), depth_chart_order,
         ))
 
     # Below the top-500 consensus board, fall back to Sleeper's full player
@@ -743,10 +758,12 @@ def sync_players(db, force=False):
         if not full_name:
             continue
         years_exp = p.get("years_exp")
+        depth_chart_order = p.get("depth_chart_order")
         rows.append((
             pid, full_name, pos, p.get("team"),
             999999, years_exp if isinstance(years_exp, int) else 0, p.get("injury_status") or None,
             999999, 999999, 999999, None, None,
+            depth_chart_order if isinstance(depth_chart_order, int) else None,
         ))
         used_sleeper_ids.add(pid)
 
@@ -759,14 +776,15 @@ def sync_players(db, force=False):
         """
         INSERT INTO players
             (id, full_name, position, nfl_team, search_rank, years_exp, injury_status,
-             rank_ppr, rank_half, rank_std, pos_rank, tier)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             rank_ppr, rank_half, rank_std, pos_rank, tier, depth_chart_order)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (id) DO UPDATE SET
             full_name = EXCLUDED.full_name, position = EXCLUDED.position,
             nfl_team = EXCLUDED.nfl_team, search_rank = EXCLUDED.search_rank,
             years_exp = EXCLUDED.years_exp, injury_status = EXCLUDED.injury_status,
             rank_ppr = EXCLUDED.rank_ppr, rank_half = EXCLUDED.rank_half,
-            rank_std = EXCLUDED.rank_std, pos_rank = EXCLUDED.pos_rank, tier = EXCLUDED.tier
+            rank_std = EXCLUDED.rank_std, pos_rank = EXCLUDED.pos_rank, tier = EXCLUDED.tier,
+            depth_chart_order = EXCLUDED.depth_chart_order
         """,
         rows,
     )
@@ -2255,7 +2273,7 @@ def players_list(league_id):
         rows.append({
             "player": p,
             "owner_team": teams_by_id.get(owned.get(p["id"])),
-            "proj": player_projection(p["position"], p["rank"], league["scoring"]),
+            "proj": player_projection(p["position"], p["rank"], league["scoring"], p["depth_chart_order"]),
             "injury_label": INJURY_LABELS.get(p["injury_status"]),
             "opponent": opponent,
             "face_url": player_face_url(p["id"], p["position"], p["nfl_team"]),
@@ -3711,7 +3729,7 @@ def build_lineup(db, league_id, team_id):
 
     picks = db.execute(
         """
-        SELECT dp.*, p.injury_status, p.years_exp
+        SELECT dp.*, p.injury_status, p.years_exp, p.depth_chart_order
         FROM draft_picks dp
         LEFT JOIN players p ON p.id = dp.player_id
         WHERE dp.league_id = ? AND dp.team_id = ? AND dp.player_id IS NOT NULL
@@ -3746,7 +3764,7 @@ def build_lineup(db, league_id, team_id):
     return starters, bench
 
 
-def player_projection(position, rank, scoring):
+def player_projection(position, rank, scoring, depth_chart_order=None):
     cfg = PROJECTION_MODEL.get(position)
     if cfg is None:
         return None
@@ -3754,8 +3772,23 @@ def player_projection(position, rank, scoring):
     # Exponential falloff from the position's peak, not an additive floor --
     # a rank-1 player projects near the peak, and projections keep dropping
     # the deeper the rank goes instead of leveling off at a guaranteed
-    # minimum. Every bench/deep player naturally lands near zero.
+    # minimum. `rank` is the OVERALL board rank (1-500 across every
+    # position, not a per-position rank), so "decay" is calibrated per
+    # position against where that position's own depth actually falls on
+    # that shared scale -- e.g. a fringe fantasy-relevant QB sits around
+    # overall rank 150-200, while a fringe kicker sits past 400, so the same
+    # decay constant would be wildly wrong for both.
     decay_factor = math.exp(-max(0, rank - 1) / cfg["decay"])
+    # A real rank reflects both playing time AND per-play production, which
+    # conflates "doesn't play" with "plays a lot but isn't very efficient" --
+    # C.J. Stroud having a mediocre overall rank this year doesn't mean he's
+    # not Houston's starter. depth_chart_order (from Sleeper) is an actual
+    # snaps signal: 1 means their team's starter there, so keep the full
+    # rank-based estimate; 2+ means a real backup, who barely plays
+    # regardless of talent, so knock the projection down hard on top of
+    # whatever the rank curve already says.
+    if isinstance(depth_chart_order, int) and depth_chart_order >= 2:
+        decay_factor *= 0.35 if depth_chart_order == 2 else 0.12
     proj = cfg["peak"] * decay_factor
     if position in PPR_BONUS_POSITIONS:
         proj += PPR_PROJECTION_BONUS.get(scoring, 0.0) * decay_factor
@@ -3768,7 +3801,10 @@ def with_projections(rows, scoring, schedule_map=None):
     for p in rows:
         row = dict(p)
         has_player = bool(row.get("player_id"))
-        row["proj"] = player_projection(row.get("position"), row.get("player_rank"), scoring) if has_player else None
+        row["proj"] = (
+            player_projection(row.get("position"), row.get("player_rank"), scoring, row.get("depth_chart_order"))
+            if has_player else None
+        )
         row["injury_label"] = INJURY_LABELS.get(row.get("injury_status"))
         if has_player:
             game = schedule_map.get(row.get("nfl_team"))

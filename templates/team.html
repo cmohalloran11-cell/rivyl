@@ -101,7 +101,7 @@
               </td>
               <td>{{ p['nfl_team'] or '—' }}</td>
               <td>{{ p['opponent'] or '—' }}</td>
-              <td class="num proj-cell">{{ '%.1f'|format(p['proj']) if p['proj'] else '—' }}</td>
+              <td class="num proj-cell">{{ '%.1f'|format(p['proj']) if p['proj'] is not none else '—' }}</td>
               <td>{{ macros.drop_button(league, team, p, is_my_team) }}</td>
             {% else %}
               <td colspan="6" class="open-slot">Empty &mdash; no {{ p['slot'] }} drafted</td>
@@ -130,7 +130,7 @@
             </td>
             <td>{{ p['nfl_team'] or '—' }}</td>
             <td>{{ p['opponent'] or '—' }}</td>
-            <td class="num proj-cell">{{ '%.1f'|format(p['proj']) if p['proj'] else '—' }}</td>
+            <td class="num proj-cell">{{ '%.1f'|format(p['proj']) if p['proj'] is not none else '—' }}</td>
             <td>{{ macros.drop_button(league, team, p, is_my_team) }}</td>
           </tr>
         {% else %}

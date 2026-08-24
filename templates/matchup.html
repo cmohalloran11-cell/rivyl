@@ -130,7 +130,7 @@
                   </span>
                 </td>
                 <td>{{ p['opponent'] or '—' }}</td>
-                <td class="num proj-cell">{{ '%.1f'|format(p['proj']) if p['proj'] else '—' }}</td>
+                <td class="num proj-cell">{{ '%.1f'|format(p['proj']) if p['proj'] is not none else '—' }}</td>
               {% else %}
                 <td colspan="3" class="open-slot">Empty</td>
               {% endif %}
@@ -158,7 +158,7 @@
                       </span>
                     </td>
                     <td>{{ p['opponent'] or '—' }}</td>
-                    <td class="num proj-cell">{{ '%.1f'|format(p['proj']) if p['proj'] else '—' }}</td>
+                    <td class="num proj-cell">{{ '%.1f'|format(p['proj']) if p['proj'] is not none else '—' }}</td>
                   {% else %}
                     <td colspan="3" class="open-slot">Empty</td>
                   {% endif %}
@@ -185,7 +185,7 @@
                       </span>
                     </td>
                     <td>{{ p['opponent'] or '—' }}</td>
-                    <td class="num proj-cell">{{ '%.1f'|format(p['proj']) if p['proj'] else '—' }}</td>
+                    <td class="num proj-cell">{{ '%.1f'|format(p['proj']) if p['proj'] is not none else '—' }}</td>
                   {% else %}
                     <td colspan="3" class="open-slot">Empty</td>
                   {% endif %}
