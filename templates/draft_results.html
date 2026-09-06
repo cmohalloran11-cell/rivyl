@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Draft Results &mdash; {{ league['name'] }}{% endblock %}
+{% block league_nav %}{{ macros.league_tabs(league, my_team_id, 'league') }}{% endblock %}
+{% block content %}
+  <h1>Draft Results</h1>
+  <p class="subtitle">{{ league['name'] }} &middot; {{ total_picks }} picks &middot; {{ league['num_teams'] }} teams</p>
+
+  {% if grades %}
+    <h2 class="section-title">Team Draft Grades</h2>
+    <div class="grade-callouts">
+      {% if grades['biggest_value'] %}
+        <div class="badge badge-open">Best value: {{ grades['biggest_value']['player_name'] }} ({{ grades['biggest_value']['team_name'] }})</div>
+      {% endif %}
+      {% if grades['biggest_reach'] %}
+        <div class="badge badge-ai">Biggest reach: {{ grades['biggest_reach']['player_name'] }} ({{ grades['biggest_reach']['team_name'] }})</div>
+      {% endif %}
+    </div>
+    <div class="grade-list">
+      {% for t in grades['teams'] %}
+        <div class="grade-row {% if my_team_id == t['team_id'] %}row-mine{% endif %}">
+          <div class="grade-badge">{{ t['grade'] }}</div>
+          <div style="flex:1;">
+            <div class="cell-flex" style="font-weight:700;">
+              {{ t['team_name'] }}
+              {% if t['owner_type'] == 'human' %}
+                <span class="badge badge-human">👤 {{ t['owner_name'] or '' }}</span>
+              {% else %}
+                <span class="badge badge-ai">🤖 AI</span>
+              {% endif %}
+            </div>
+            <p class="hint">
+              {{ t['strategy'] }}
+              {% if t['best_pick'] %} &middot; Best pick: {{ t['best_pick']['player_name'] }}{% endif %}
+              {% if t['worst_pick'] %} &middot; Worst pick: {{ t['worst_pick']['player_name'] }}{% endif %}
+            </p>
+          </div>
+        </div>
+      {% endfor %}
+    </div>
+  {% endif %}
+
+  <h2 class="section-title">Position Breakdown</h2>
+  <div class="stat-card-row">
+    {% for pos in position_order %}
+      {% if position_counts.get(pos) %}
+        <div class="stat-card">
+          <div class="stat-card-value">{{ position_counts[pos] }}</div>
+          <div class="stat-card-label">{{ pos }} drafted</div>
+        </div>
+      {% endif %}
+    {% endfor %}
+  </div>
+
+  <h2 class="section-title">Draft Board</h2>
+  <div class="table-scroll">
+    <table class="teams-table">
+      <thead>
+        <tr>
+          <th>Rd</th>
+          {% for team in teams %}<th>{{ team['team_name'] or 'Open' }}</th>{% endfor %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in rounds %}
+          <tr>
+            <td class="rank-cell">{{ r }}</td>
+            {% for team in teams %}
+              {% set pick = board.get(r, {}).get(team['id']) %}
+              <td class="draft-board-cell">
+                {% if pick %}
+                  {{ pick['player_name'] }}
+                  <span class="badge badge-pos badge-pos-{{ pick['position'] }}">{{ pick['position'] }}</span>
+                {% else %}
+                  &mdash;
+                {% endif %}
+              </td>
+            {% endfor %}
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+{% endblock %}

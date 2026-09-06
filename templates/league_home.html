@@ -70,7 +70,7 @@
       <a class="btn btn-small" href="{{ url_for('draft_room', league_id=league['id']) }}">Go to Draft Room</a>
     {% else %}
       <p class="hint">Draft complete.</p>
-      <a class="btn btn-secondary btn-small" href="{{ url_for('draft_room', league_id=league['id']) }}">View Draft Results</a>
+      <a class="btn btn-secondary btn-small" href="{{ url_for('draft_results', league_id=league['id']) }}">View Draft Results</a>
     {% endif %}
   </div>
 

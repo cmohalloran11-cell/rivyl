@@ -926,6 +926,11 @@ input:focus, select:focus {
 /* ---- Player rows (roster / players list) ---- */
 
 .player-table-wrap { max-height: calc(100vh - 420px); min-height: 260px; overflow-y: auto; border-radius: var(--radius-lg); }
+/* Wide content (draft board, etc.) scrolls inside itself -- the page body
+   never scrolls sideways. */
+.table-scroll { overflow-x: auto; border-radius: var(--radius-lg); }
+.draft-board-cell { font-size: 0.78rem; white-space: nowrap; }
+.draft-board-cell .badge { font-size: 0.62rem; padding: 2px 7px; }
 
 .proj-cell { font-weight: 700; font-variant-numeric: tabular-nums; color: var(--text); }
 

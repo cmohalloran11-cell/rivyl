@@ -4899,6 +4899,55 @@ def draft_room(league_id):
     return render_template("draft.html", league=league, state_json=json.dumps(state))
 
 
+@app.route("/leagues/<int:league_id>/draft/results")
+def draft_results(league_id):
+    db = get_db()
+    league = db.execute("SELECT * FROM leagues WHERE id = ?", (league_id,)).fetchone()
+    if league is None:
+        flash("League not found.")
+        return redirect(url_for("index"))
+    if league["draft_status"] != "complete":
+        flash("Draft results are available once the draft is complete.")
+        return redirect(url_for("draft_room", league_id=league_id))
+
+    teams = db.execute(
+        "SELECT * FROM teams WHERE league_id = ? ORDER BY slot_index", (league_id,)
+    ).fetchall()
+    my_team_id = get_my_team_id(league_id, teams)
+    grades = json.loads(league["grades_json"]) if league["grades_json"] else None
+
+    picks = db.execute(
+        """
+        SELECT dp.*, t.team_name, t.slot_index FROM draft_picks dp
+        JOIN teams t ON t.id = dp.team_id
+        WHERE dp.league_id = ? AND dp.player_id IS NOT NULL
+        ORDER BY dp.round ASC, dp.pick_in_round ASC
+        """,
+        (league_id,),
+    ).fetchall()
+
+    board = {}
+    max_round = 0
+    position_counts = {}
+    for p in picks:
+        board.setdefault(p["round"], {})[p["team_id"]] = p
+        max_round = max(max_round, p["round"])
+        position_counts[p["position"]] = position_counts.get(p["position"], 0) + 1
+
+    return render_template(
+        "draft_results.html",
+        league=league,
+        teams=teams,
+        my_team_id=my_team_id,
+        grades=grades,
+        board=board,
+        rounds=range(1, max_round + 1),
+        total_picks=len(picks),
+        position_counts=position_counts,
+        position_order=POSITION_ORDER,
+    )
+
+
 @app.route("/leagues/<int:league_id>/draft/state")
 def draft_state(league_id):
     state = build_state(league_id)
