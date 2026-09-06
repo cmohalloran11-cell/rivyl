@@ -1704,6 +1704,23 @@ def league_home(league_id):
     )
 
 
+@app.route("/admin/purge-all-leagues", methods=["POST"])
+def admin_purge_all_leagues():
+    # TEMPORARY one-time cleanup route -- removes every league (cascades to
+    # teams/picks/trades/messages/etc via ON DELETE CASCADE), used once to
+    # clear leagues created before real login existed, then deleted from the
+    # codebase in the commit right after this one. Login-gated only as a
+    # minimal bar against a stray crawler hitting it, not real authorization
+    # -- do not leave this route in place.
+    if not session.get("user_id"):
+        return jsonify({"error": "must be logged in"}), 403
+    db = get_db()
+    names = [r["name"] for r in db.execute("SELECT name FROM leagues").fetchall()]
+    db.execute("DELETE FROM leagues")
+    db.commit()
+    return jsonify({"deleted": names})
+
+
 @app.route("/leagues/<int:league_id>/delete", methods=["POST"])
 def delete_league(league_id):
     db = get_db()
