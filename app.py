@@ -506,6 +506,20 @@ def init_db():
             tier INTEGER
         );
 
+        CREATE TABLE IF NOT EXISTS market_projections (
+            player_id TEXT PRIMARY KEY REFERENCES players(id) ON DELETE CASCADE,
+            pass_yards REAL NOT NULL DEFAULT 0,
+            pass_td REAL NOT NULL DEFAULT 0,
+            interceptions REAL NOT NULL DEFAULT 0,
+            rush_yards REAL NOT NULL DEFAULT 0,
+            rush_td REAL NOT NULL DEFAULT 0,
+            rec REAL NOT NULL DEFAULT 0,
+            rec_yards REAL NOT NULL DEFAULT 0,
+            rec_td REAL NOT NULL DEFAULT 0,
+            fg_made REAL NOT NULL DEFAULT 0,
+            updated_at REAL NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS draft_picks (
             id SERIAL PRIMARY KEY,
             league_id INTEGER NOT NULL REFERENCES leagues(id) ON DELETE CASCADE,
@@ -1032,6 +1046,183 @@ def build_player_name_index(db):
     return idx
 
 
+# ---------------------------------------------------------------------------
+# Market-based projections -- PrizePicks posts real player prop lines (pass
+# yards, receptions, TDs by type, etc.), and a sportsbook's line is the
+# market's own best estimate of that stat, priced by people with real money
+# on it. Reading those lines and running them through the exact same
+# compute_offense_points() the real box-score scorer uses gives a projection
+# grounded in the market instead of a synthetic rank-based curve -- and one
+# that already respects this league's own scoring format (Standard/Half
+# PPR/Full PPR), since compute_offense_points takes that as a parameter.
+#
+# The endpoint below is PrizePicks' own partner-api host, which serves the
+# same JSON:API feed as their public site with no bot wall and no cookie
+# needed (see ChristopherO/sports-edge/pullers.py, where this was first
+# reverse-engineered for other sports). Best-effort only: any failure here
+# just means projections fall back to the rank-based model, never an error.
+# ---------------------------------------------------------------------------
+
+PRIZEPICKS_PARTNER_URL = "https://partner-api.prizepicks.com/projections"
+MARKET_PROJECTIONS_TTL_SECONDS = 15 * 60
+
+# PrizePicks stat_type strings -> the compute_offense_points() field they feed.
+# Not every stat has a market line every week (fumbles, extra points aren't
+# offered as props at all) -- those fields just stay 0, a minor
+# underestimate, not a fabricated number.
+_PP_STAT_FIELD_MAP = {
+    "Pass Yards": "pass_yards",
+    "Pass TDs": "pass_td",
+    "Pass INTs": "interceptions",
+    "Rush Yards": "rush_yards",
+    "Rush TDs": "rush_td",
+    "Receptions": "rec",
+    "Receiving Yards": "rec_yards",
+    "Rec TDs": "rec_td",
+    "FG Made": "fg_made",
+}
+
+
+def _pp_session():
+    s = requests.Session()
+    s.headers.update({
+        "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                       "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"),
+        "Accept": "application/json",
+    })
+    return s
+
+
+def _pp_get(session, url, params=None, retries=3):
+    """GET with 429 backoff -- the partner host throttles hard after only a
+    few requests, so honor Retry-After (falling back to exponential) rather
+    than hammering it."""
+    r = None
+    for i in range(retries):
+        r = session.get(url, params=params, timeout=30)
+        if r.status_code != 429:
+            return r
+        try:
+            wait = float(r.headers.get("Retry-After", "") or 0)
+        except ValueError:
+            wait = 0.0
+        time.sleep(min(wait or 1.5 * (2 ** i), 8.0))
+    return r
+
+
+def fetch_prizepicks_nfl_props():
+    """One request returns every projection PrizePicks has, across every
+    sport, in a single JSON:API payload -- so pull once and filter locally
+    rather than risk a 429 with per-league requests. Returns a list of
+    {player, position, stat_type, line} dicts (never raises; [] on any
+    failure, since this is a best-effort enrichment, not a hard dependency)."""
+    try:
+        session = _pp_session()
+        resp = _pp_get(session, PRIZEPICKS_PARTNER_URL, params={"per_page": 5000})
+        if resp is None or resp.status_code != 200:
+            return []
+        payload = resp.json()
+        included = {(i.get("type"), i.get("id")): i for i in payload.get("included", [])}
+
+        def resolve(rel, name):
+            ref = ((rel.get(name) or {}).get("data")) or {}
+            return included.get((ref.get("type"), ref.get("id")), {}) or {}
+
+        rows = []
+        for proj in payload.get("data", []):
+            try:
+                attr = proj.get("attributes", {}) or {}
+                rel = proj.get("relationships", {}) or {}
+                league_name = (resolve(rel, "league").get("attributes", {}) or {}).get("name") or ""
+                # Excludes NFLSZN (season-long futures) and NFL1H/NFL1Q (partial-game
+                # props, whose lines are a fraction of a full game) -- only the
+                # full-game slate maps cleanly onto a weekly fantasy projection.
+                if league_name.strip().upper() != "NFL":
+                    continue
+                player_attr = resolve(rel, "new_player").get("attributes", {}) or {}
+                name = player_attr.get("display_name") or player_attr.get("name")
+                stat_type = attr.get("stat_type")
+                line = attr.get("line_score")
+                if not name or " + " in name or not stat_type or line is None:
+                    continue
+                rows.append({"player": name, "position": player_attr.get("position"), "stat_type": stat_type, "line": line})
+            except Exception:
+                continue
+        return rows
+    except Exception:
+        return []
+
+
+def sync_market_projections(db, force=False):
+    if not force:
+        last = db.execute("SELECT MAX(updated_at) AS t FROM market_projections").fetchone()["t"]
+        if last and time.time() - last < MARKET_PROJECTIONS_TTL_SECONDS:
+            return True
+
+    props = fetch_prizepicks_nfl_props()
+    if not props:
+        return False
+
+    name_index = {
+        (normalize_player_name(r["full_name"]), r["position"]): r["id"]
+        for r in db.execute("SELECT id, full_name, position FROM players WHERE position != 'DEF'").fetchall()
+    }
+
+    by_player = {}
+    for p in props:
+        field = _PP_STAT_FIELD_MAP.get(p["stat_type"])
+        if field is None:
+            continue
+        player_id = name_index.get((normalize_player_name(p["player"]), p["position"]))
+        if player_id is None:
+            continue
+        by_player.setdefault(player_id, {}).setdefault(field, p["line"])
+
+    if not by_player:
+        return False
+
+    now = time.time()
+    rows = [
+        (
+            pid, o.get("pass_yards", 0.0), o.get("pass_td", 0.0), o.get("interceptions", 0.0),
+            o.get("rush_yards", 0.0), o.get("rush_td", 0.0), o.get("rec", 0.0),
+            o.get("rec_yards", 0.0), o.get("rec_td", 0.0), o.get("fg_made", 0.0), now,
+        )
+        for pid, o in by_player.items()
+    ]
+    db.executemany(
+        """
+        INSERT INTO market_projections
+            (player_id, pass_yards, pass_td, interceptions, rush_yards, rush_td, rec, rec_yards, rec_td, fg_made, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT (player_id) DO UPDATE SET
+            pass_yards = EXCLUDED.pass_yards, pass_td = EXCLUDED.pass_td, interceptions = EXCLUDED.interceptions,
+            rush_yards = EXCLUDED.rush_yards, rush_td = EXCLUDED.rush_td, rec = EXCLUDED.rec,
+            rec_yards = EXCLUDED.rec_yards, rec_td = EXCLUDED.rec_td, fg_made = EXCLUDED.fg_made,
+            updated_at = EXCLUDED.updated_at
+        """,
+        rows,
+    )
+    db.commit()
+    return True
+
+
+def get_market_projection_map(db):
+    """player_id -> an offense-stat dict ready for compute_offense_points().
+    Only players PrizePicks currently has props posted for appear here --
+    everyone else (deep bench, bye weeks, kickers/DEF with no props) is
+    absent, so callers fall back to the rank-based model for them."""
+    out = {}
+    for r in db.execute("SELECT * FROM market_projections").fetchall():
+        out[r["player_id"]] = {
+            "pass_yards": r["pass_yards"], "pass_td": r["pass_td"], "int": r["interceptions"],
+            "rush_yards": r["rush_yards"], "rush_td": r["rush_td"],
+            "rec": r["rec"], "rec_yards": r["rec_yards"], "rec_td": r["rec_td"],
+            "fumbles_lost": 0.0, "fg_made": r["fg_made"], "xp_made": 0.0,
+        }
+    return out
+
+
 def sync_week_stats(db, week, force=False):
     games = ensure_live_games(db, week)
     if not games:
@@ -1535,8 +1726,12 @@ def home_page(league_id):
     is_knockout = league["league_format"] == "Knockout"
 
     if my_team is not None and league["draft_status"] in ("in_progress", "complete"):
+        sync_market_projections(db)
         starters, _ = build_lineup(db, league_id, my_team_id)
-        starters = with_projections(starters, league["scoring"], get_schedule_map(db, league["current_week"]))
+        starters = with_projections(
+            starters, league["scoring"], get_schedule_map(db, league["current_week"]),
+            get_market_projection_map(db),
+        )
         top_players = sorted(
             [p for p in starters if p["player_id"]], key=lambda p: p["proj"] or 0, reverse=True
         )[:5]
@@ -1765,8 +1960,9 @@ def team_detail(league_id, team_id):
     if league["draft_status"] in ("in_progress", "complete"):
         starters, bench = build_lineup(db, league_id, team_id)
         schedule_map = get_schedule_map(db, league["current_week"])
-        starters = with_projections(starters, league["scoring"], schedule_map)
-        bench = with_projections(bench, league["scoring"], schedule_map)
+        market_map = get_market_projection_map(db)
+        starters = with_projections(starters, league["scoring"], schedule_map, market_map)
+        bench = with_projections(bench, league["scoring"], schedule_map, market_map)
 
     matchup = None
     live_score = None
@@ -1954,10 +2150,12 @@ def lineup_swap(league_id, team_id):
         db.execute("UPDATE draft_picks SET lineup_slot = ? WHERE id = ?", (slot_a, pick_b["id"]))
         db.commit()
 
+    sync_market_projections(db)
     starters, bench = build_lineup(db, league_id, team_id)
     schedule_map = get_schedule_map(db, league["current_week"])
-    starters = with_projections(starters, league["scoring"], schedule_map)
-    bench = with_projections(bench, league["scoring"], schedule_map)
+    market_map = get_market_projection_map(db)
+    starters = with_projections(starters, league["scoring"], schedule_map, market_map)
+    bench = with_projections(bench, league["scoring"], schedule_map, market_map)
     return jsonify({"ok": True, "starters": starters, "bench": bench})
 
 
@@ -2203,6 +2401,7 @@ def matchup_detail(league_id):
         ensure_schedule(db, league_id)
         sync_week_scoring(db, league_id, league["current_week"])
         ensure_ai_teams_optimal(db, league_id)
+        sync_market_projections(db)
         week_status = get_week_status(db, league["current_week"])
         week_matchups = db.execute(
             "SELECT * FROM matchups WHERE league_id = ? AND week = ? ORDER BY id",
@@ -2250,11 +2449,12 @@ def matchup_detail(league_id):
             left_score, right_score = b_score, a_score
 
         schedule_map = get_schedule_map(db, league["current_week"])
+        market_map = get_market_projection_map(db)
         left_starters, _ = build_lineup(db, league_id, left["id"])
-        left_starters = with_projections(left_starters, league["scoring"], schedule_map)
+        left_starters = with_projections(left_starters, league["scoring"], schedule_map, market_map)
         if right is not None:
             right_starters, _ = build_lineup(db, league_id, right["id"])
-            right_starters = with_projections(right_starters, league["scoring"], schedule_map)
+            right_starters = with_projections(right_starters, league["scoring"], schedule_map, market_map)
 
     return render_template(
         "matchup.html",
@@ -2294,12 +2494,13 @@ def _knockout_matchup_view(db, league, teams, my_team_id):
         ensure_schedule(db, league_id)
         sync_week_scoring(db, league_id, league["current_week"])
         ensure_ai_teams_optimal(db, league_id)
+        sync_market_projections(db)
         week_status = get_week_status(db, league["current_week"])
 
         knockout_alive, knockout_eliminated = get_knockout_standings(db, league_id)
         schedule_map = get_schedule_map(db, league["current_week"])
         left_starters, _ = build_lineup(db, league_id, left["id"])
-        left_starters = with_projections(left_starters, league["scoring"], schedule_map)
+        left_starters = with_projections(left_starters, league["scoring"], schedule_map, get_market_projection_map(db))
         left_score = get_team_live_score(db, league_id, left["id"], league["current_week"], league["scoring"])
 
         for t in knockout_alive:
@@ -2375,6 +2576,8 @@ def players_list(league_id):
     query += f" ORDER BY {rank_col} ASC"
 
     schedule_map = get_schedule_map(db, league["current_week"])
+    sync_market_projections(db)
+    market_map = get_market_projection_map(db)
 
     rows = []
     for p in db.execute(query, params).fetchall():
@@ -2390,10 +2593,15 @@ def players_list(league_id):
             opponent = "BYE"
         else:
             opponent = None
+        market_o = market_map.get(p["id"])
+        proj = (
+            compute_offense_points(market_o, league["scoring"]) if market_o is not None
+            else player_projection(p["position"], p["rank"], league["scoring"], p["depth_chart_order"])
+        )
         rows.append({
             "player": p,
             "owner_team": teams_by_id.get(owned.get(p["id"])),
-            "proj": player_projection(p["position"], p["rank"], league["scoring"], p["depth_chart_order"]),
+            "proj": proj,
             "injury_label": INJURY_LABELS.get(p["injury_status"]),
             "opponent": opponent,
             "face_url": player_face_url(p["id"], p["position"], p["nfl_team"]),
@@ -3918,16 +4126,23 @@ def player_projection(position, rank, scoring, depth_chart_order=None):
     return round(max(0.0, proj), 1)
 
 
-def with_projections(rows, scoring, schedule_map=None):
+def with_projections(rows, scoring, schedule_map=None, market_map=None):
     schedule_map = schedule_map or {}
+    market_map = market_map or {}
     out = []
     for p in rows:
         row = dict(p)
         has_player = bool(row.get("player_id"))
-        row["proj"] = (
-            player_projection(row.get("position"), row.get("player_rank"), scoring, row.get("depth_chart_order"))
-            if has_player else None
-        )
+        market_o = market_map.get(row.get("player_id")) if has_player else None
+        if market_o is not None:
+            row["proj"] = compute_offense_points(market_o, scoring)
+            row["proj_source"] = "market"
+        elif has_player:
+            row["proj"] = player_projection(row.get("position"), row.get("player_rank"), scoring, row.get("depth_chart_order"))
+            row["proj_source"] = "model"
+        else:
+            row["proj"] = None
+            row["proj_source"] = None
         row["injury_label"] = INJURY_LABELS.get(row.get("injury_status"))
         if has_player:
             game = schedule_map.get(row.get("nfl_team"))
