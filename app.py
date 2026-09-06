@@ -517,6 +517,8 @@ def init_db():
             rec_yards REAL NOT NULL DEFAULT 0,
             rec_td REAL NOT NULL DEFAULT 0,
             fg_made REAL NOT NULL DEFAULT 0,
+            fumbles_lost REAL NOT NULL DEFAULT 0,
+            xp_made REAL NOT NULL DEFAULT 0,
             updated_at REAL NOT NULL
         );
 
@@ -669,6 +671,10 @@ def init_db():
         },
         "trades": {
             "parent_trade_id": "ALTER TABLE trades ADD COLUMN parent_trade_id INTEGER",
+        },
+        "market_projections": {
+            "fumbles_lost": "ALTER TABLE market_projections ADD COLUMN fumbles_lost REAL NOT NULL DEFAULT 0",
+            "xp_made": "ALTER TABLE market_projections ADD COLUMN xp_made REAL NOT NULL DEFAULT 0",
         },
     }
     for table, columns in table_migrations.items():
@@ -1047,8 +1053,8 @@ def build_player_name_index(db):
 
 
 # ---------------------------------------------------------------------------
-# Market-based projections -- PrizePicks posts real player prop lines (pass
-# yards, receptions, TDs by type, etc.), and a sportsbook's line is the
+# Market-based projections -- real player prop lines (pass yards, receptions,
+# TDs by type, etc.) from public pick'em boards, where the line is the
 # market's own best estimate of that stat, priced by people with real money
 # on it. Reading those lines and running them through the exact same
 # compute_offense_points() the real box-score scorer uses gives a projection
@@ -1056,20 +1062,24 @@ def build_player_name_index(db):
 # that already respects this league's own scoring format (Standard/Half
 # PPR/Full PPR), since compute_offense_points takes that as a parameter.
 #
-# The endpoint below is PrizePicks' own partner-api host, which serves the
-# same JSON:API feed as their public site with no bot wall and no cookie
-# needed (see ChristopherO/sports-edge/pullers.py, where this was first
-# reverse-engineered for other sports). Best-effort only: any failure here
-# just means projections fall back to the rank-based model, never an error.
+# Two independent public boards are pulled (PrizePicks + Underdog) and
+# averaged per stat when both have a line, so no single book's number (or
+# single book's outage) drives the whole projection. Both endpoints below are
+# each book's own public/partner host serving the same feed their site uses,
+# no bot wall, no cookie (see ChristopherO/sports-edge/pullers.py and
+# underdog.py, where this was first reverse-engineered for other sports).
+# Best-effort only: either source failing just means less market coverage,
+# falling back further to the rank-based model -- never an error.
 # ---------------------------------------------------------------------------
 
 PRIZEPICKS_PARTNER_URL = "https://partner-api.prizepicks.com/projections"
+UNDERDOG_PICKEM_URL = "https://api.underdogfantasy.com/beta/v5/over_under_lines"
 MARKET_PROJECTIONS_TTL_SECONDS = 15 * 60
 
 # PrizePicks stat_type strings -> the compute_offense_points() field they feed.
 # Not every stat has a market line every week (fumbles, extra points aren't
-# offered as props at all) -- those fields just stay 0, a minor
-# underestimate, not a fabricated number.
+# offered as props on this book at all) -- those fields just stay 0 unless
+# Underdog (below) covers them, a minor underestimate, not a fabricated number.
 _PP_STAT_FIELD_MAP = {
     "Pass Yards": "pass_yards",
     "Pass TDs": "pass_td",
@@ -1082,8 +1092,23 @@ _PP_STAT_FIELD_MAP = {
     "FG Made": "fg_made",
 }
 
+# Underdog's stat keys -> the same fields. Underdog covers a couple PrizePicks
+# doesn't offer at all (fumbles_lost, extra_points_made).
+_UD_STAT_FIELD_MAP = {
+    "passing_yds": "pass_yards",
+    "passing_tds": "pass_td",
+    "passing_ints": "interceptions",
+    "rushing_yds": "rush_yards",
+    "rush_rec_tds": "rush_td",  # combined rush+rec TD count -- worth the same 6pts either bucket
+    "receiving_rec": "rec",
+    "receiving_yds": "rec_yards",
+    "fumbles_lost": "fumbles_lost",
+    "field_goals_made": "fg_made",
+    "extra_points_made": "xp_made",
+}
 
-def _pp_session():
+
+def _market_session():
     s = requests.Session()
     s.headers.update({
         "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -1093,10 +1118,10 @@ def _pp_session():
     return s
 
 
-def _pp_get(session, url, params=None, retries=3):
-    """GET with 429 backoff -- the partner host throttles hard after only a
-    few requests, so honor Retry-After (falling back to exponential) rather
-    than hammering it."""
+def _market_get(session, url, params=None, retries=3):
+    """GET with 429 backoff -- these hosts throttle hard after only a few
+    requests, so honor Retry-After (falling back to exponential) rather than
+    hammering them."""
     r = None
     for i in range(retries):
         r = session.get(url, params=params, timeout=30)
@@ -1110,15 +1135,27 @@ def _pp_get(session, url, params=None, retries=3):
     return r
 
 
+def _ud_option_is_boosted(opt):
+    # payout_multiplier comes back as a string (e.g. "1.0"), not a float.
+    mult = opt.get("payout_multiplier")
+    if mult is None:
+        return False
+    try:
+        return abs(float(mult) - 1.0) > 1e-9
+    except (TypeError, ValueError):
+        return False
+
+
 def fetch_prizepicks_nfl_props():
     """One request returns every projection PrizePicks has, across every
     sport, in a single JSON:API payload -- so pull once and filter locally
     rather than risk a 429 with per-league requests. Returns a list of
-    {player, position, stat_type, line} dicts (never raises; [] on any
-    failure, since this is a best-effort enrichment, not a hard dependency)."""
+    {player, position, field, line} dicts, field already mapped via
+    _PP_STAT_FIELD_MAP (never raises; [] on any failure, since this is a
+    best-effort enrichment, not a hard dependency)."""
     try:
-        session = _pp_session()
-        resp = _pp_get(session, PRIZEPICKS_PARTNER_URL, params={"per_page": 5000})
+        session = _market_session()
+        resp = _market_get(session, PRIZEPICKS_PARTNER_URL, params={"per_page": 5000})
         if resp is None or resp.status_code != 200:
             return []
         payload = resp.json()
@@ -1148,13 +1185,66 @@ def fetch_prizepicks_nfl_props():
                 # only the real fair-value line.
                 if (attr.get("odds_type") or "standard") != "standard":
                     continue
+                field = _PP_STAT_FIELD_MAP.get(attr.get("stat_type"))
+                if field is None:
+                    continue
                 player_attr = resolve(rel, "new_player").get("attributes", {}) or {}
                 name = player_attr.get("display_name") or player_attr.get("name")
-                stat_type = attr.get("stat_type")
                 line = attr.get("line_score")
-                if not name or " + " in name or not stat_type or line is None:
+                if not name or " + " in name or line is None:
                     continue
-                rows.append({"player": name, "position": player_attr.get("position"), "stat_type": stat_type, "line": line})
+                rows.append({"player": name, "position": player_attr.get("position"), "field": field, "line": line})
+            except Exception:
+                continue
+        return rows
+    except Exception:
+        return []
+
+
+def fetch_underdog_nfl_props():
+    """One request returns Underdog's whole board across every sport. Returns
+    a list of {player, position, field, line} dicts, field already mapped via
+    _UD_STAT_FIELD_MAP (never raises; [] on any failure)."""
+    try:
+        session = _market_session()
+        session.headers["Referer"] = "https://underdogfantasy.com/"
+        resp = _market_get(session, UNDERDOG_PICKEM_URL)
+        if resp is None or resp.status_code != 200:
+            return []
+        payload = resp.json()
+        players = {p.get("id"): p for p in payload.get("players", [])}
+        appearances = {a.get("id"): a for a in payload.get("appearances", [])}
+
+        rows = []
+        for line in payload.get("over_under_lines", []):
+            try:
+                ou = line.get("over_under", {}) or {}
+                appearance_stat = ou.get("appearance_stat", {}) or {}
+                stat = appearance_stat.get("stat")
+                # Excludes period_*/season_* variants (quarter/half props and
+                # season-long futures) -- only the plain full-game stat key maps
+                # cleanly onto a weekly fantasy projection.
+                field = _UD_STAT_FIELD_MAP.get(stat) if stat and not stat.startswith(("period_", "season_")) else None
+                if field is None:
+                    continue
+                appearance = appearances.get(appearance_stat.get("appearance_id"), {}) or {}
+                player = players.get(appearance.get("player_id"), {}) or {}
+                if (player.get("sport_id") or appearance.get("sport_id")) != "NFL":
+                    continue
+                name = ou.get("title") or " ".join(
+                    x for x in [player.get("first_name"), player.get("last_name")] if x
+                )
+                line_val = line.get("stat_value", line.get("line"))
+                if not name or line_val is None:
+                    continue
+                # A "boosted" pick (payout_multiplier != 1.0 on either side) is
+                # Underdog's own deliberately-adjusted alternate, same concern as
+                # PrizePicks' demon/goblin -- only keep the real, unadjusted line.
+                options = line.get("options") or [{}]
+                if any(_ud_option_is_boosted(o) for o in options):
+                    continue
+                position = player.get("position_name") or player.get("position_display_name")
+                rows.append({"player": name, "position": position, "field": field, "line": float(line_val)})
             except Exception:
                 continue
         return rows
@@ -1168,7 +1258,10 @@ def sync_market_projections(db, force=False):
         if last and time.time() - last < MARKET_PROJECTIONS_TTL_SECONDS:
             return True
 
-    props = fetch_prizepicks_nfl_props()
+    # Two independent books, so one outage (or one book's mispriced number)
+    # doesn't singlehandedly drive the projection -- averaged below wherever
+    # both happen to cover the same player/stat.
+    props = fetch_prizepicks_nfl_props() + fetch_underdog_nfl_props()
     if not props:
         return False
 
@@ -1177,37 +1270,48 @@ def sync_market_projections(db, force=False):
         for r in db.execute("SELECT id, full_name, position FROM players WHERE position != 'DEF'").fetchall()
     }
 
-    by_player = {}
+    lines_by_player = {}
     for p in props:
-        field = _PP_STAT_FIELD_MAP.get(p["stat_type"])
-        if field is None:
-            continue
         player_id = name_index.get((normalize_player_name(p["player"]), p["position"]))
         if player_id is None:
             continue
-        by_player.setdefault(player_id, {}).setdefault(field, p["line"])
+        lines_by_player.setdefault(player_id, {}).setdefault(p["field"], []).append(p["line"])
 
-    if not by_player:
+    if not lines_by_player:
         return False
+
+    by_player = {
+        pid: {field: sum(values) / len(values) for field, values in fields.items()}
+        for pid, fields in lines_by_player.items()
+    }
 
     now = time.time()
     rows = [
         (
             pid, o.get("pass_yards", 0.0), o.get("pass_td", 0.0), o.get("interceptions", 0.0),
             o.get("rush_yards", 0.0), o.get("rush_td", 0.0), o.get("rec", 0.0),
-            o.get("rec_yards", 0.0), o.get("rec_td", 0.0), o.get("fg_made", 0.0), now,
+            o.get("rec_yards", 0.0), o.get("rec_td", 0.0), o.get("fg_made", 0.0),
+            o.get("fumbles_lost", 0.0), o.get("xp_made", 0.0), now,
         )
         for pid, o in by_player.items()
     ]
+    # This table is purely a live cache of "what the board says right now" --
+    # a player who no longer has any qualifying line (e.g. their only prop
+    # was a demon/goblin we now exclude) must lose their row here, not keep
+    # whatever was last written. Clearing before each refresh is what makes
+    # that true; an upsert alone only ever adds/updates, never removes.
+    db.execute("DELETE FROM market_projections")
     db.executemany(
         """
         INSERT INTO market_projections
-            (player_id, pass_yards, pass_td, interceptions, rush_yards, rush_td, rec, rec_yards, rec_td, fg_made, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (player_id, pass_yards, pass_td, interceptions, rush_yards, rush_td, rec, rec_yards, rec_td, fg_made,
+             fumbles_lost, xp_made, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (player_id) DO UPDATE SET
             pass_yards = EXCLUDED.pass_yards, pass_td = EXCLUDED.pass_td, interceptions = EXCLUDED.interceptions,
             rush_yards = EXCLUDED.rush_yards, rush_td = EXCLUDED.rush_td, rec = EXCLUDED.rec,
             rec_yards = EXCLUDED.rec_yards, rec_td = EXCLUDED.rec_td, fg_made = EXCLUDED.fg_made,
+            fumbles_lost = EXCLUDED.fumbles_lost, xp_made = EXCLUDED.xp_made,
             updated_at = EXCLUDED.updated_at
         """,
         rows,
@@ -1218,7 +1322,7 @@ def sync_market_projections(db, force=False):
 
 def get_market_projection_map(db):
     """player_id -> an offense-stat dict ready for compute_offense_points().
-    Only players PrizePicks currently has props posted for appear here --
+    Only players with at least one qualifying market line appear here --
     everyone else (deep bench, bye weeks, kickers/DEF with no props) is
     absent, so callers fall back to the rank-based model for them."""
     out = {}
@@ -1227,7 +1331,7 @@ def get_market_projection_map(db):
             "pass_yards": r["pass_yards"], "pass_td": r["pass_td"], "int": r["interceptions"],
             "rush_yards": r["rush_yards"], "rush_td": r["rush_td"],
             "rec": r["rec"], "rec_yards": r["rec_yards"], "rec_td": r["rec_td"],
-            "fumbles_lost": 0.0, "fg_made": r["fg_made"], "xp_made": 0.0,
+            "fumbles_lost": r["fumbles_lost"], "fg_made": r["fg_made"], "xp_made": r["xp_made"],
         }
     return out
 
