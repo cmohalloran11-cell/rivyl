@@ -1573,6 +1573,75 @@ def get_player_week_points(db, week, player_id, scoring):
     return row["pts"], row["game_status"]
 
 
+def summarize_stat_line(stat_line_json, position):
+    """Short human-readable box-score line from the same raw stat dict
+    compute_offense_points/compute_def_points score against -- real numbers
+    the game actually produced, not a derived metric (target share, snap %)
+    this app doesn't track and has no business fabricating."""
+    if not stat_line_json:
+        return None
+    try:
+        o = json.loads(stat_line_json)
+    except (TypeError, ValueError):
+        return None
+
+    parts = []
+    if position == "DEF":
+        if o.get("sacks"):
+            parts.append(f"{o['sacks']:.0f} sack" + ("s" if o["sacks"] != 1 else ""))
+        if o.get("def_int"):
+            parts.append(f"{o['def_int']:.0f} INT")
+        if o.get("def_td"):
+            parts.append(f"{o['def_td']:.0f} TD")
+        if o.get("fumble_rec"):
+            parts.append(f"{o['fumble_rec']:.0f} FR")
+        return ", ".join(parts) if parts else "—"
+
+    if o.get("pass_yards"):
+        parts.append(f"{o['pass_yards']:.0f} pass yds")
+    if o.get("pass_td"):
+        parts.append(f"{o['pass_td']:.0f} pass TD")
+    if o.get("int"):
+        parts.append(f"{o['int']:.0f} INT")
+    if o.get("rush_yards"):
+        parts.append(f"{o['rush_yards']:.0f} rush yds")
+    if o.get("rush_td"):
+        parts.append(f"{o['rush_td']:.0f} rush TD")
+    if o.get("rec"):
+        parts.append(f"{o['rec']:.0f} rec")
+    if o.get("rec_yards"):
+        parts.append(f"{o['rec_yards']:.0f} rec yds")
+    if o.get("rec_td"):
+        parts.append(f"{o['rec_td']:.0f} rec TD")
+    if o.get("fg_made"):
+        parts.append(f"{o['fg_made']:.0f} FG")
+    if o.get("fumbles_lost"):
+        parts.append(f"{o['fumbles_lost']:.0f} fum lost")
+    return ", ".join(parts) if parts else "—"
+
+
+def build_player_outlook(recent_avg, season_avg, proj, proj_source, injury_label, opponent):
+    """A few grounded sentences from real numbers already on the page --
+    not a fabricated scouting-report essay. Each line only appears when the
+    underlying number actually exists."""
+    lines = []
+    if injury_label:
+        lines.append(f"Listed as {injury_label} heading into this week.")
+    if recent_avg is not None and season_avg is not None and season_avg > 0:
+        if recent_avg >= season_avg * 1.15:
+            lines.append(f"Trending up — {recent_avg:.1f} pts/game over the last 3 weeks vs a {season_avg:.1f} season average.")
+        elif recent_avg <= season_avg * 0.85:
+            lines.append(f"Trending down — {recent_avg:.1f} pts/game over the last 3 weeks vs a {season_avg:.1f} season average.")
+        else:
+            lines.append(f"Steady — {recent_avg:.1f} pts/game over the last 3 weeks, in line with a {season_avg:.1f} season average.")
+    if proj is not None:
+        source_label = "the betting market" if proj_source == "market" else "RIVYL's model"
+        # opponent already reads as "vs GB" / "@ GB" / "BYE" -- no extra preposition needed.
+        opp_bit = f" {opponent}" if opponent else ""
+        lines.append(f"Projected for {proj:.1f} pts this week{opp_bit}, per {source_label}.")
+    return lines
+
+
 def get_team_live_score(db, league_id, team_id, week, scoring):
     starters, _ = build_lineup(db, league_id, team_id)
     total = 0.0
@@ -2918,6 +2987,110 @@ def schedule_page(league_id):
         season_weeks=SEASON_WEEKS,
         week_matchups=week_matchups,
         my_team_id=my_team_id,
+    )
+
+
+@app.route("/leagues/<int:league_id>/players/<player_id>")
+def player_profile(league_id, player_id):
+    db = get_db()
+    league = db.execute("SELECT * FROM leagues WHERE id = ?", (league_id,)).fetchone()
+    if league is None:
+        flash("League not found.")
+        return redirect(url_for("index"))
+
+    player = db.execute("SELECT * FROM players WHERE id = ?", (player_id,)).fetchone()
+    if player is None:
+        flash("Player not found.")
+        return redirect(url_for("players_list", league_id=league_id))
+
+    teams = db.execute(
+        "SELECT * FROM teams WHERE league_id = ? ORDER BY slot_index", (league_id,)
+    ).fetchall()
+    teams_by_id = {t["id"]: t for t in teams}
+    my_team_id = get_my_team_id(league_id, teams)
+
+    owned = db.execute(
+        "SELECT team_id FROM draft_picks WHERE league_id = ? AND player_id = ?",
+        (league_id, player_id),
+    ).fetchone()
+    owner_team = teams_by_id.get(owned["team_id"]) if owned else None
+
+    schedule_map = get_schedule_map(db, league["current_week"])
+    game = schedule_map.get(player["nfl_team"])
+    if game:
+        opponent = ("vs " if game["is_home"] else "@ ") + (game["opponent"] or "")
+    elif player["nfl_team"]:
+        opponent = "BYE"
+    else:
+        opponent = None
+
+    live_ranks = compute_live_rankings(db, league["scoring"])
+    live = live_ranks.get(player_id)
+    market_map = get_market_projection_map(db)
+    proj_source = "market" if market_map.get(player_id) is not None else ("model" if live else None)
+
+    stat_rows = db.execute(
+        "SELECT * FROM player_week_stats WHERE player_id = ? ORDER BY week", (player_id,)
+    ).fetchall()
+    col = {"Standard": "pts_std", "Half PPR": "pts_half", "Full PPR": "pts_ppr"}.get(league["scoring"], "pts_half")
+    game_log = []
+    played_scores = []
+    for r in stat_rows:
+        game_log.append({
+            "week": r["week"],
+            "points": r[col],
+            "status": r["game_status"],
+            "summary": summarize_stat_line(r["stat_line"], player["position"]),
+        })
+        if r["game_status"] == "post":
+            played_scores.append(r[col])
+    game_log.reverse()  # most recent week first
+
+    # Opponent per logged week, from whichever week's schedule snapshot is
+    # still on hand -- best effort, not re-fetched (past weeks' schedules
+    # were already synced when they were current).
+    week_opponents = {
+        row["week"]: (("vs " if row["is_home"] else "@ ") + (row["opponent"] or ""))
+        for row in db.execute(
+            "SELECT week, opponent, is_home FROM nfl_schedule WHERE team = ?", (player["nfl_team"],)
+        ).fetchall()
+    }
+    for g in game_log:
+        g["opponent"] = week_opponents.get(g["week"])
+
+    season_total = round(sum(played_scores), 1)
+    games_played = len(played_scores)
+    season_avg = round(season_total / games_played, 1) if games_played else None
+    season_high = round(max(played_scores), 1) if played_scores else None
+    season_low = round(min(played_scores), 1) if played_scores else None
+    recent_avg = round(sum(played_scores[-3:]) / len(played_scores[-3:]), 1) if played_scores else None
+
+    outlook = build_player_outlook(
+        recent_avg, season_avg, live["proj"] if live else None, proj_source,
+        INJURY_LABELS.get(player["injury_status"]), opponent,
+    )
+
+    return render_template(
+        "player_profile.html",
+        league=league,
+        player=player,
+        owner_team=owner_team,
+        my_team_id=my_team_id,
+        opponent=opponent,
+        injury_label=INJURY_LABELS.get(player["injury_status"]),
+        face_url=player_face_url(player["id"], player["position"], player["nfl_team"]),
+        initials=player_initials(player["full_name"]),
+        rank=live["rank"] if live else None,
+        pos_rank=live["pos_rank"] if live else None,
+        proj=live["proj"] if live else None,
+        proj_source=proj_source,
+        season_total=season_total,
+        games_played=games_played,
+        season_avg=season_avg,
+        season_high=season_high,
+        season_low=season_low,
+        game_log=game_log,
+        outlook=outlook,
     )
 
 

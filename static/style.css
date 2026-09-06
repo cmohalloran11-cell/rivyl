@@ -419,6 +419,49 @@ button:disabled, .btn:disabled { opacity: 0.5; cursor: not-allowed; transform: n
   position: relative;
 }
 
+/* ---- Stat cards -- one big number, one label underneath. Numbers carry
+   the page (player profile, insights, dashboards); the label never
+   competes with the value for attention. ---- */
+.stat-card-row { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 18px; }
+.stat-card {
+  flex: 1 1 120px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px 18px;
+  text-align: center;
+}
+.stat-card-value {
+  font-family: var(--font-display);
+  font-size: 1.8rem;
+  font-weight: 800;
+  color: var(--text);
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+.stat-card-label {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-faint);
+  font-weight: 700;
+  margin-top: 4px;
+}
+
+.outlook-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.outlook-list li {
+  padding-left: 18px;
+  position: relative;
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+.outlook-list li::before {
+  content: "";
+  position: absolute; left: 0; top: 0.55em;
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--accent);
+}
+
 .form { display: flex; flex-direction: column; gap: 14px; }
 .form-row { display: flex; gap: 14px; }
 .form-row label { flex: 1; }
@@ -657,6 +700,7 @@ input:focus, select:focus {
 .rank-cell.rank-3 { color: var(--bronze); }
 
 .player-name-cell { font-weight: 700; }
+.player-name-cell a:hover { color: var(--accent); }
 
 /* Any spot where a name/link sits next to one or more badges -- gives
    consistent breathing room whether it fits on one line or wraps. */
