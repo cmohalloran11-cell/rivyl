@@ -14,6 +14,8 @@
      href="{{ url_for('trades_page', league_id=league['id']) }}"><span class="league-tab-icon">🤝</span> Trades</a>
   <a class="league-tab {% if active == 'standings' %}league-tab-active{% endif %}"
      href="{{ url_for('standings_page', league_id=league['id']) }}"><span class="league-tab-icon">📊</span> Standings</a>
+  <a class="league-tab {% if active == 'schedule' %}league-tab-active{% endif %}"
+     href="{{ url_for('schedule_page', league_id=league['id']) }}"><span class="league-tab-icon">📅</span> Schedule</a>
   <a class="league-tab {% if active == 'messages' %}league-tab-active{% endif %}"
      href="{{ url_for('league_messages', league_id=league['id']) }}"><span class="league-tab-icon">💬</span> Chat</a>
   <a class="league-tab {% if active == 'league' %}league-tab-active{% endif %}"

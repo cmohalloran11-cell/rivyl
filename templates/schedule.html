@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Schedule &mdash; {{ league['name'] }}{% endblock %}
+{% block league_nav %}{{ macros.league_tabs(league, my_team_id, 'schedule') }}{% endblock %}
+{% block content %}
+  <h1>Schedule</h1>
+  <p class="subtitle">{{ league['name'] }}{% if week %} &middot; Week {{ week }}{% endif %}</p>
+
+  {% if is_knockout %}
+    <div class="empty-state">
+      <div class="empty-state-icon">🔪</div>
+      <h3>Knockout leagues don't run a head-to-head schedule</h3>
+      <p>Every week the lowest scorer among teams still alive is eliminated &mdash; check the Standings page to see who's still in it.</p>
+      <a class="btn btn-small" href="{{ url_for('standings_page', league_id=league['id']) }}">Go to Standings</a>
+    </div>
+  {% elif league['draft_status'] != 'complete' %}
+    <div class="empty-state">
+      <div class="empty-state-icon">📅</div>
+      <h3>Schedule isn't set yet</h3>
+      <p>The weekly matchup schedule is generated once the draft finishes.</p>
+    </div>
+  {% else %}
+    <div class="pos-tabs">
+      {% for w in range(1, season_weeks + 1) %}
+        <a class="pos-tab {% if w == week %}pos-tab-active{% endif %}"
+           href="{{ url_for('schedule_page', league_id=league['id'], week=w) }}">Week {{ w }}</a>
+      {% endfor %}
+    </div>
+
+    {% if week_matchups %}
+      <div class="card invite-card">
+        <div class="invite-label">
+          Week {{ week }} matchups
+          {% if week > league['current_week'] %}<span class="status-pill status-scheduled">Projected</span>
+          {% elif week_matchups[0]['status'] == 'final' %}<span class="status-pill status-final">Final</span>
+          {% elif week_matchups[0]['status'] == 'live' %}<span class="status-pill status-live">Live</span>
+          {% else %}<span class="status-pill status-scheduled">Scheduled</span>{% endif %}
+        </div>
+        <div class="week-matchups">
+          {% for m in week_matchups %}
+            <div class="week-matchup-row">
+              <a class="week-matchup-team" href="{{ url_for('team_detail', league_id=league['id'], team_id=m['team_a']['id']) }}">
+                {{ macros.team_logo(m['team_a']) }}
+                {{ m['team_a']['team_name'] }}
+                {% if m['team_a']['owner_type'] == 'human' %}👤{% else %}🤖{% endif %}
+                {{ macros.team_record(m['team_a']) }}
+              </a>
+              <span class="week-matchup-score">{{ '%.1f'|format(m['score_a']) }} &ndash; {{ '%.1f'|format(m['score_b']) }}</span>
+              {% if m['team_b'] %}
+                <a class="week-matchup-team" href="{{ url_for('team_detail', league_id=league['id'], team_id=m['team_b']['id']) }}">
+                  {{ macros.team_record(m['team_b']) }}
+                  {{ m['team_b']['team_name'] }}
+                  {% if m['team_b']['owner_type'] == 'human' %}👤{% else %}🤖{% endif %}
+                  {{ macros.team_logo(m['team_b']) }}
+                </a>
+              {% else %}
+                <span class="week-matchup-team">BYE</span>
+              {% endif %}
+              {% if week == league['current_week'] %}
+                <a class="link-back" href="{{ url_for('matchup_detail', league_id=league['id'], matchup_id=m['id']) }}">View &rarr;</a>
+              {% endif %}
+            </div>
+          {% endfor %}
+        </div>
+        <p class="hint">
+          {% if week > league['current_week'] %}Projected from current rosters &mdash; real scores land once Week {{ week }} kicks off.
+          {% elif week < league['current_week'] %}Final &mdash; Week {{ week }} is in the books.
+          {% elif week_matchups[0]['status'] == 'scheduled' %}Games haven't kicked off yet &mdash; scores start updating once they do.
+          {% else %}Scores are real, pulled from live NFL box scores as games are played.{% endif %}
+        </p>
+      </div>
+    {% else %}
+      <div class="empty-state">
+        <div class="empty-state-icon">📅</div>
+        <h3>No matchups this week</h3>
+      </div>
+    {% endif %}
+  {% endif %}
+{% endblock %}

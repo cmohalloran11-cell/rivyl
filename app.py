@@ -2852,6 +2852,75 @@ def standings_page(league_id):
     )
 
 
+@app.route("/leagues/<int:league_id>/schedule")
+def schedule_page(league_id):
+    db = get_db()
+    league = db.execute("SELECT * FROM leagues WHERE id = ?", (league_id,)).fetchone()
+    if league is None:
+        flash("League not found.")
+        return redirect(url_for("index"))
+
+    teams = db.execute(
+        "SELECT * FROM teams WHERE league_id = ? ORDER BY slot_index", (league_id,)
+    ).fetchall()
+    teams_by_id = {t["id"]: t for t in teams}
+    my_team_id = get_my_team_id(league_id, teams)
+    is_knockout = league["league_format"] == "Knockout"
+
+    week = None
+    week_matchups = []
+    if not is_knockout and league["draft_status"] == "complete":
+        ensure_schedule(db, league_id)
+        try:
+            week = int(request.args.get("week", league["current_week"]))
+        except (TypeError, ValueError):
+            week = league["current_week"]
+        week = max(1, min(SEASON_WEEKS, week))
+        week_status = get_week_status(db, week)
+
+        schedule_map = market_map = None  # only built lazily, if a scheduled (unplayed) week needs a projection
+        rows = db.execute(
+            "SELECT * FROM matchups WHERE league_id = ? AND week = ? ORDER BY id",
+            (league_id, week),
+        ).fetchall()
+        for m in rows:
+            team_a, team_b = teams_by_id.get(m["team_a_id"]), teams_by_id.get(m["team_b_id"])
+            if m["played"]:
+                status, score_a, score_b = "final", m["team_a_score"], m["team_b_score"]
+            elif week_status != "scheduled":
+                status = "live"
+                score_a = get_team_live_score(db, league_id, team_a["id"], week, league["scoring"])
+                score_b = get_team_live_score(db, league_id, team_b["id"], week, league["scoring"]) if team_b else 0.0
+            else:
+                # A future week -- no real stats to sum yet, so show each
+                # team's current-roster projection instead of a blank score.
+                status = "scheduled"
+                if schedule_map is None:
+                    schedule_map = get_schedule_map(db, league["current_week"])
+                    market_map = get_market_projection_map(db)
+                a_starters, _ = build_lineup(db, league_id, team_a["id"])
+                score_a = total_projection(with_projections(a_starters, league["scoring"], schedule_map, market_map))
+                if team_b:
+                    b_starters, _ = build_lineup(db, league_id, team_b["id"])
+                    score_b = total_projection(with_projections(b_starters, league["scoring"], schedule_map, market_map))
+                else:
+                    score_b = 0.0
+            week_matchups.append({
+                "id": m["id"], "team_a": team_a, "team_b": team_b,
+                "score_a": score_a, "score_b": score_b, "status": status,
+            })
+
+    return render_template(
+        "schedule.html",
+        league=league,
+        is_knockout=is_knockout,
+        week=week,
+        season_weeks=SEASON_WEEKS,
+        week_matchups=week_matchups,
+        my_team_id=my_team_id,
+    )
+
+
 @app.route("/leagues/<int:league_id>/messages", methods=["GET", "POST"])
 def league_messages(league_id):
     db = get_db()

@@ -511,6 +511,13 @@ input:focus, select:focus {
   border-radius: var(--radius-lg);
   background: var(--bg-elevated);
 }
+/* Richer shape (icon + headline + copy + CTA) -- these rules are additive:
+   a bare <p class="empty-state">text</p> has none of these children, so it
+   keeps rendering exactly as before. */
+.empty-state-icon { font-size: 2rem; line-height: 1; margin-bottom: 10px; }
+.empty-state h3 { margin: 4px 0 6px; color: var(--text); font-size: 1rem; }
+.empty-state > p { margin: 0 auto 16px; max-width: 46ch; }
+.empty-state .btn { margin-top: 2px; }
 
 /* ---- League list / cards ---- */
 
