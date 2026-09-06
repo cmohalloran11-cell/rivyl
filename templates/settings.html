@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Settings &mdash; RIVYL{% endblock %}
+{% block content %}
+  <h1>Settings</h1>
+  <p class="subtitle">Account &amp; security</p>
+
+  <h2 class="section-title">Account</h2>
+  <div class="card">
+    <p class="hint" style="margin:0 0 6px;">Username</p>
+    <p style="margin:0; font-weight:700;">{{ current_user['username'] }}</p>
+    <p class="hint" style="margin:10px 0 0;">RIVYL member since {{ current_user['created_at'][:10] }}</p>
+  </div>
+
+  <h2 class="section-title">Security</h2>
+  <form class="card form" method="post" action="{{ url_for('change_password') }}">
+    <label>
+      Current password
+      <input type="password" name="current_password" required>
+    </label>
+    <label>
+      New password
+      <input type="password" name="new_password" minlength="8" required>
+    </label>
+    <label>
+      Confirm new password
+      <input type="password" name="confirm_password" minlength="8" required>
+    </label>
+    <button class="btn btn-small" type="submit" style="align-self:flex-start;">Change Password</button>
+  </form>
+
+  <a class="link-back" href="{{ url_for('user_profile') }}">&larr; Back to Profile</a>
+{% endblock %}

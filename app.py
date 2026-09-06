@@ -1903,6 +1903,46 @@ def user_profile():
     )
 
 
+@app.route("/settings")
+def settings_page():
+    current_user = get_current_user(get_db())
+    if current_user is None:
+        flash("Log in to see your settings.")
+        return redirect(url_for("login", next=url_for("settings_page")))
+    return render_template("settings.html", current_user=current_user)
+
+
+@app.route("/settings/password", methods=["POST"])
+def change_password():
+    db = get_db()
+    current_user = get_current_user(db)
+    if current_user is None:
+        flash("Log in first.")
+        return redirect(url_for("login"))
+
+    current_password = request.form.get("current_password", "")
+    new_password = request.form.get("new_password", "")
+    confirm_password = request.form.get("confirm_password", "")
+
+    if not check_password_hash(current_user["password_hash"], current_password):
+        flash("Current password is incorrect.")
+        return redirect(url_for("settings_page"))
+    if len(new_password) < 8:
+        flash("New password must be at least 8 characters.")
+        return redirect(url_for("settings_page"))
+    if new_password != confirm_password:
+        flash("New passwords don't match.")
+        return redirect(url_for("settings_page"))
+
+    db.execute(
+        "UPDATE users SET password_hash = ? WHERE id = ?",
+        (generate_password_hash(new_password), current_user["id"]),
+    )
+    db.commit()
+    flash("Password changed.")
+    return redirect(url_for("settings_page"))
+
+
 NOTIFICATION_ICON = {"trade": "🤝", "waiver": "📝", "lineup": "⚠️", "draft": "🎙️", "league": "📢"}
 
 
