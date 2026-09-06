@@ -1358,6 +1358,57 @@ def get_market_projection_map(db):
     return out
 
 
+def compute_live_rankings(db, scoring):
+    """Rank the whole player pool by CURRENT projection (market-derived where
+    the board has a real line, the rank-based model otherwise) instead of the
+    bundled preseason board -- a projection that already reflects this week's
+    real betting lines is a strictly fresher ordering signal than a static
+    file written once and never touched again. Returns
+    {player_id: {"rank": int, "pos_rank": "RB1", "proj": float}}, overall rank
+    1..N across every position plus a position-scoped rank, both computed
+    fresh every call (cached on `g` per scoring format so one request that
+    touches several pages of the same league only computes this once).
+
+    The bundled rankings file isn't gone -- player_projection()'s model
+    fallback still needs *some* ordinal signal to seed its decay curve for
+    players the market doesn't cover (deep bench, byes, kickers most weeks),
+    and the preseason board remains a reasonable relative ordering for that
+    internal purpose. It just no longer defines the rank anyone sees or the
+    value the draft/trade/waiver logic scores against -- that's proj now.
+    """
+    cache_key = f"_live_rankings_{scoring}"
+    cached = getattr(g, cache_key, None)
+    if cached is not None:
+        return cached
+
+    sync_market_projections(db)
+    market_map = get_market_projection_map(db)
+    seed_col = RANK_COLUMN_BY_SCORING.get(scoring, "rank_half")
+    seed_rows = db.execute(f"SELECT id, position, depth_chart_order, {seed_col} AS seed_rank FROM players").fetchall()
+
+    scored = []
+    for r in seed_rows:
+        market_o = market_map.get(r["id"])
+        proj = (
+            compute_offense_points(market_o, scoring) if market_o is not None
+            else player_projection(r["position"], r["seed_rank"], scoring, r["depth_chart_order"])
+        )
+        if proj is None:
+            continue
+        scored.append((r["id"], r["position"], proj))
+    # Highest projection first; a stable sort keeps ties in their original
+    # (preseason-seeded) relative order rather than shuffling them randomly.
+    scored.sort(key=lambda t: -t[2])
+
+    result = {}
+    pos_counts = {}
+    for i, (pid, pos, proj) in enumerate(scored, start=1):
+        pos_counts[pos] = pos_counts.get(pos, 0) + 1
+        result[pid] = {"rank": i, "pos_rank": f"{pos}{pos_counts[pos]}", "proj": proj}
+    setattr(g, cache_key, result)
+    return result
+
+
 def sync_week_stats(db, week, force=False):
     games = ensure_live_games(db, week)
     if not games:
@@ -2696,9 +2747,8 @@ def players_list(league_id):
     own_filter = request.args.get("own", "available").lower()
     if own_filter not in ("all", "available", "rostered"):
         own_filter = "available"
-    rank_col = RANK_COLUMN_BY_SCORING.get(league["scoring"], "rank_half")
 
-    query = f"SELECT *, {rank_col} AS rank FROM players"
+    query = "SELECT * FROM players"
     conditions, params = [], []
     if pos_filter in POSITION_ORDER:
         conditions.append("position = ?")
@@ -2708,11 +2758,11 @@ def players_list(league_id):
         params.append(f"%{search_query}%")
     if conditions:
         query += " WHERE " + " AND ".join(conditions)
-    query += f" ORDER BY {rank_col} ASC"
 
     schedule_map = get_schedule_map(db, league["current_week"])
-    sync_market_projections(db)
-    market_map = get_market_projection_map(db)
+    # Rank/pos-rank/proj all come from the same live, market-derived ordering
+    # now -- no separate rank_col lookup or player_projection call needed here.
+    live_ranks = compute_live_rankings(db, league["scoring"])
 
     rows = []
     for p in db.execute(query, params).fetchall():
@@ -2728,20 +2778,20 @@ def players_list(league_id):
             opponent = "BYE"
         else:
             opponent = None
-        market_o = market_map.get(p["id"])
-        proj = (
-            compute_offense_points(market_o, league["scoring"]) if market_o is not None
-            else player_projection(p["position"], p["rank"], league["scoring"], p["depth_chart_order"])
-        )
+        live = live_ranks.get(p["id"])
+        player = dict(p)
+        player["rank"] = live["rank"] if live else 999999
+        player["pos_rank"] = live["pos_rank"] if live else None
         rows.append({
-            "player": p,
+            "player": player,
             "owner_team": teams_by_id.get(owned.get(p["id"])),
-            "proj": proj,
+            "proj": live["proj"] if live else None,
             "injury_label": INJURY_LABELS.get(p["injury_status"]),
             "opponent": opponent,
             "face_url": player_face_url(p["id"], p["position"], p["nfl_team"]),
             "initials": player_initials(p["full_name"]),
         })
+    rows.sort(key=lambda r: r["player"]["rank"])
 
     return render_template(
         "players.html",
@@ -2927,7 +2977,6 @@ def get_available_players(db, league_id, scoring="Standard", roster_config=None)
     """roster_config, if given, excludes any position the league has zero
     starter slots for (e.g. a no-kicker league) from the board entirely --
     not just from draft requirements."""
-    col = RANK_COLUMN_BY_SCORING.get(scoring, "rank_half")
     params = [league_id]
     exclude_clause = ""
     if roster_config is not None:
@@ -2936,17 +2985,29 @@ def get_available_players(db, league_id, scoring="Standard", roster_config=None)
             placeholders = ",".join("?" * len(excluded_positions))
             exclude_clause = f"AND position NOT IN ({placeholders})"
             params.extend(excluded_positions)
-    return db.execute(
+    rows = db.execute(
         f"""
-        SELECT *, {col} AS rank FROM players
+        SELECT * FROM players
         WHERE id NOT IN (
             SELECT player_id FROM draft_picks WHERE league_id = ? AND player_id IS NOT NULL
         )
         {exclude_clause}
-        ORDER BY {col} ASC
         """,
         params,
     ).fetchall()
+
+    # Rank comes from the live, market-derived ordering (compute_live_rankings)
+    # rather than the static rank_col -- see that function's docstring.
+    live_ranks = compute_live_rankings(db, scoring)
+    available = []
+    for p in rows:
+        player = dict(p)
+        live = live_ranks.get(player["id"])
+        player["rank"] = live["rank"] if live else 999999
+        player["pos_rank"] = live["pos_rank"] if live else player.get("pos_rank")
+        available.append(player)
+    available.sort(key=lambda p: p["rank"])
+    return available
 
 
 def get_position_counts(db, league_id, team_id):
@@ -3460,8 +3521,8 @@ def execute_roster_move(db, league, team_row, add_player_id=None, drop_pick_id=N
     if drop_pick is not None:
         db.execute("DELETE FROM draft_picks WHERE id = ?", (drop_pick["id"],))
 
-    rank_col = RANK_COLUMN_BY_SCORING.get(league["scoring"], "rank_half")
-    rank_val = add_player[rank_col]
+    live = compute_live_rankings(db, league["scoring"]).get(add_player["id"])
+    rank_val = live["rank"] if live else None
     overall_pick = next_overall_pick(db, league_id)
     db.execute(
         """
@@ -4563,7 +4624,7 @@ def draft_pick(league_id):
             **build_state(league_id),
         }), 400
 
-    rank_col = RANK_COLUMN_BY_SCORING.get(league["scoring"], "rank_half")
+    live = compute_live_rankings(db, league["scoring"]).get(player["id"])
     reasoning = f"{pick_row['owner_name'] or pick_row['team_name']} selects {player['full_name']} ({player['position']})."
     cur = db.execute(
         """
@@ -4573,7 +4634,7 @@ def draft_pick(league_id):
         WHERE id = ? AND player_id IS NULL
         """,
         (player["id"], player["full_name"], player["position"], player["nfl_team"],
-         player[rank_col], reasoning, pick_row["id"]),
+         live["rank"] if live else None, reasoning, pick_row["id"]),
     )
     if cur.rowcount == 0:
         # Lost the race -- a concurrent request (e.g. this same pick's timeout
