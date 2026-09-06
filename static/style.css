@@ -1082,6 +1082,21 @@ input:focus, select:focus {
 }
 .message-row-tx .cell-flex { gap: 6px; }
 
+/* ---- League activity feed ---- */
+.activity-feed { display: flex; flex-direction: column; gap: 8px; }
+.activity-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 16px;
+  transition: border-color 0.15s ease;
+}
+.activity-row:hover { border-color: var(--border-bright); }
+.activity-icon { font-size: 1.1rem; flex-shrink: 0; }
+
 /* ---- Status pills ---- */
 
 .status-pill {

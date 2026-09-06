@@ -3278,6 +3278,46 @@ def player_profile(league_id, player_id):
     )
 
 
+ACTIVITY_KIND_ICON = {"add": "📈", "drop": "📉", "trade": "🔄"}
+
+
+@app.route("/leagues/<int:league_id>/activity")
+def activity_page(league_id):
+    db = get_db()
+    league = db.execute("SELECT * FROM leagues WHERE id = ?", (league_id,)).fetchone()
+    if league is None:
+        flash("League not found.")
+        return redirect(url_for("index"))
+
+    teams = db.execute(
+        "SELECT * FROM teams WHERE league_id = ? ORDER BY slot_index", (league_id,)
+    ).fetchall()
+    my_team_id = get_my_team_id(league_id, teams)
+
+    kind = request.args.get("kind", "all")
+    if kind not in ("all", "waivers", "trade"):
+        kind = "all"
+
+    query = """
+        SELECT tx.*, t.team_name, t.logo_icon, t.logo_color FROM transactions tx
+        JOIN teams t ON t.id = tx.team_id
+        WHERE tx.league_id = ?
+    """
+    params = [league_id]
+    if kind == "waivers":
+        query += " AND tx.kind IN ('add', 'drop')"
+    elif kind == "trade":
+        query += " AND tx.kind = 'trade'"
+    query += " ORDER BY tx.id DESC LIMIT 200"
+    activity = db.execute(query, params).fetchall()
+
+    return render_template(
+        "activity.html",
+        league=league, my_team_id=my_team_id, activity=activity, kind=kind,
+        kind_icons=ACTIVITY_KIND_ICON,
+    )
+
+
 @app.route("/leagues/<int:league_id>/messages", methods=["GET", "POST"])
 def league_messages(league_id):
     db = get_db()

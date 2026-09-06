@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Activity &mdash; {{ league['name'] }}{% endblock %}
+{% block league_nav %}{{ macros.league_tabs(league, my_team_id, 'activity') }}{% endblock %}
+{% block content %}
+  <h1>League Activity</h1>
+  <p class="subtitle">{{ league['name'] }} &middot; every add, drop, and trade, newest first</p>
+
+  <div class="pos-tabs">
+    <a class="pos-tab {% if kind == 'all' %}pos-tab-active{% endif %}"
+       href="{{ url_for('activity_page', league_id=league['id'], kind='all') }}">All</a>
+    <a class="pos-tab {% if kind == 'trade' %}pos-tab-active{% endif %}"
+       href="{{ url_for('activity_page', league_id=league['id'], kind='trade') }}">Trades</a>
+    <a class="pos-tab {% if kind == 'waivers' %}pos-tab-active{% endif %}"
+       href="{{ url_for('activity_page', league_id=league['id'], kind='waivers') }}">Waivers</a>
+  </div>
+
+  {% if activity %}
+    <div class="activity-feed">
+      {% for entry in activity %}
+        <div class="activity-row">
+          <span class="activity-icon">{{ kind_icons.get(entry['kind'], '📋') }}</span>
+          <span class="cell-flex" style="flex:1;">
+            {{ macros.team_logo(entry) }}
+            <strong>{{ entry['team_name'] }}</strong>
+            <span class="hint" style="margin:0;">{{ entry['detail'] }}</span>
+          </span>
+          <span class="hint" style="margin:0; white-space:nowrap;">{{ entry['created_at'][:16] }}</span>
+        </div>
+      {% endfor %}
+    </div>
+  {% else %}
+    <div class="empty-state">
+      <div class="empty-state-icon">🔔</div>
+      <h3>No activity yet</h3>
+      <p>Adds, drops, and trades will show up here as your league makes moves.</p>
+      <a class="btn btn-small" href="{{ url_for('waivers_page', league_id=league['id']) }}">Browse Free Agents</a>
+    </div>
+  {% endif %}
+{% endblock %}
