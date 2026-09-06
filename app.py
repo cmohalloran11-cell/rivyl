@@ -1092,28 +1092,6 @@ _PP_STAT_FIELD_MAP = {
     "FG Made": "fg_made",
 }
 
-# PrizePicks doesn't always split a player's touchdown market by type -- for a
-# lot of players (e.g. a QB with no standalone "Pass TDs" line that week) the
-# ONLY standard touchdown prop offered is a combined one. Dropping those
-# silently (the old behavior) meant those players got zero TD credit at all,
-# understating them relative to peers who happen to have a single-stat line.
-# Approximate by crediting the position's primary TD bucket -- for a QB that's
-# passing; for a skill player, rush and rec TDs both pay 6pts in
-# compute_offense_points, so which of the two buckets it lands in doesn't
-# change the point total.
-_PP_COMBO_TD_STAT_TYPES = {"Pass+Rush+Rec TDs", "Pass+Rush TDs", "Rush+Rec TDs", "Pass+Rec TDs", "Player Touchdowns"}
-_PP_COMBO_TD_BUCKET_BY_POSITION = {"QB": "pass_td"}
-_PP_COMBO_TD_DEFAULT_BUCKET = "rush_td"
-
-
-def _pp_resolve_field(stat_type, position):
-    field = _PP_STAT_FIELD_MAP.get(stat_type)
-    if field:
-        return field
-    if stat_type in _PP_COMBO_TD_STAT_TYPES:
-        return _PP_COMBO_TD_BUCKET_BY_POSITION.get(position, _PP_COMBO_TD_DEFAULT_BUCKET)
-    return None
-
 # Underdog's stat keys -> the same fields. Underdog covers a couple PrizePicks
 # doesn't offer at all (fumbles_lost, extra_points_made).
 _UD_STAT_FIELD_MAP = {
@@ -1207,10 +1185,10 @@ def fetch_prizepicks_nfl_props():
                 # only the real fair-value line.
                 if (attr.get("odds_type") or "standard") != "standard":
                     continue
-                player_attr = resolve(rel, "new_player").get("attributes", {}) or {}
-                field = _pp_resolve_field(attr.get("stat_type"), player_attr.get("position"))
+                field = _PP_STAT_FIELD_MAP.get(attr.get("stat_type"))
                 if field is None:
                     continue
+                player_attr = resolve(rel, "new_player").get("attributes", {}) or {}
                 name = player_attr.get("display_name") or player_attr.get("name")
                 line = attr.get("line_score")
                 if not name or " + " in name or line is None:
