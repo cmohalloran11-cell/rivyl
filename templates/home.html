@@ -103,10 +103,12 @@
 
   <h2 class="section-title">Jump To</h2>
   <div class="home-grid">
+    {% if my_team_id %}
     <a class="card quick-link-card" href="{{ url_for('team_detail', league_id=league['id'], team_id=my_team_id) }}">
       <div class="quick-link-title">📋 Roster</div>
       <div class="quick-link-desc">Your starting lineup and bench</div>
     </a>
+    {% endif %}
     <a class="card quick-link-card" href="{{ url_for('matchup_detail', league_id=league['id']) }}">
       <div class="quick-link-title">⚔️ Matchup</div>
       <div class="quick-link-desc">This week's head-to-head</div>

@@ -2,8 +2,10 @@
 <nav class="league-tabs">
   <a class="league-tab {% if active == 'home' %}league-tab-active{% endif %}"
      href="{{ url_for('home_page', league_id=league['id']) }}"><span class="league-tab-icon">🏠</span> Home</a>
+  {% if my_team_id %}
   <a class="league-tab {% if active == 'roster' %}league-tab-active{% endif %}"
      href="{{ url_for('team_detail', league_id=league['id'], team_id=my_team_id) }}"><span class="league-tab-icon">📋</span> Roster</a>
+  {% endif %}
   <a class="league-tab {% if active == 'matchup' %}league-tab-active{% endif %}"
      href="{{ url_for('matchup_detail', league_id=league['id']) }}"><span class="league-tab-icon">⚔️</span> Matchup</a>
   <a class="league-tab {% if active == 'players' %}league-tab-active{% endif %}"
