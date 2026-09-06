@@ -1139,6 +1139,15 @@ def fetch_prizepicks_nfl_props():
                 # full-game slate maps cleanly onto a weekly fantasy projection.
                 if league_name.strip().upper() != "NFL":
                     continue
+                # "demon"/"goblin" are PrizePicks' own deliberately-skewed alternate
+                # lines (demon: inflated, harder to clear; goblin: deflated, easier)
+                # -- not a market estimate of the true expected stat. For a lot of
+                # players the ONLY line posted is one of these, and treating it as
+                # the expected value was quietly inflating projections (demon lines
+                # outnumber goblin ~2:1 in practice, skewing the average up). Keep
+                # only the real fair-value line.
+                if (attr.get("odds_type") or "standard") != "standard":
+                    continue
                 player_attr = resolve(rel, "new_player").get("attributes", {}) or {}
                 name = player_attr.get("display_name") or player_attr.get("name")
                 stat_type = attr.get("stat_type")
