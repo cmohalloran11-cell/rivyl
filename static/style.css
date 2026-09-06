@@ -598,6 +598,9 @@ input:focus, select:focus {
   background: var(--danger-soft); color: var(--danger);
 }
 
+.badge-win { background: var(--live-soft); color: var(--live); border-color: rgba(34, 197, 94, 0.25); }
+.badge-loss { background: var(--danger-soft); color: var(--danger); border-color: rgba(239, 68, 68, 0.25); }
+
 /* ---- Tables (standings, rosters, players) ---- */
 
 .teams-table {
@@ -638,6 +641,8 @@ input:focus, select:focus {
 .teams-table tr:last-child td { border-bottom: none; }
 .row-open { color: var(--text-dim); }
 .open-slot { font-style: italic; }
+.row-mine { box-shadow: inset 3px 0 0 var(--accent); background: var(--accent-soft); }
+.row-mine:hover { background: var(--accent-soft); }
 
 .rank-cell { font-weight: 800; color: var(--text-dim); font-family: var(--font-display); }
 .rank-cell.rank-1 { color: var(--gold); text-shadow: 0 0 14px rgba(255, 201, 77, 0.35); }
@@ -987,6 +992,23 @@ input:focus, select:focus {
   flex-shrink: 0;
   font-family: var(--font-display);
 }
+
+/* ---- Power rankings (standings page) ---- */
+
+.power-rank-list { display: flex; flex-direction: column; gap: 8px; }
+.power-rank-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 16px;
+  transition: border-color 0.15s ease, transform 0.15s var(--ease);
+}
+.power-rank-row:hover { border-color: var(--border-bright); transform: translateY(-1px); }
+.power-rank-row .rank-cell { min-width: 22px; text-align: center; }
+.power-rank-row .stat-num { font-family: var(--font-display); font-weight: 800; min-width: 44px; text-align: right; }
 
 /* ---- League chat / activity feed ---- */
 

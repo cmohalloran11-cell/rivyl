@@ -2805,6 +2805,53 @@ def players_list(league_id):
     )
 
 
+@app.route("/leagues/<int:league_id>/standings")
+def standings_page(league_id):
+    db = get_db()
+    league = db.execute("SELECT * FROM leagues WHERE id = ?", (league_id,)).fetchone()
+    if league is None:
+        flash("League not found.")
+        return redirect(url_for("index"))
+
+    teams = db.execute(
+        "SELECT * FROM teams WHERE league_id = ? ORDER BY slot_index", (league_id,)
+    ).fetchall()
+    is_knockout = league["league_format"] == "Knockout"
+
+    if is_knockout:
+        knockout_alive, knockout_eliminated = get_knockout_standings(db, league_id)
+        standings_teams = knockout_alive + knockout_eliminated
+        knockout_champion = knockout_alive[0] if len(knockout_alive) == 1 else None
+        pf_pa, streaks, power_ranked = {}, {}, []
+    else:
+        pf_pa = get_points_for_against(db, league_id)
+        streaks = get_streaks(db, league_id, teams)
+        filled = [t for t in teams if t["status"] == "filled"]
+        # Best win% first, points-for as the tiebreak -- standard fantasy
+        # ordering, distinct from the power ranking's own blended score below.
+        standings_teams = sorted(
+            filled,
+            key=lambda t: (
+                -(t["wins"] / (t["wins"] + t["losses"]) if (t["wins"] + t["losses"]) else 0.0),
+                -pf_pa.get(t["id"], [0.0, 0.0])[0],
+            ),
+        ) + [t for t in teams if t["status"] == "open"]
+        power_ranked = compute_power_rankings(teams, pf_pa)
+        knockout_champion = None
+
+    return render_template(
+        "standings.html",
+        league=league,
+        standings_teams=standings_teams,
+        pf_pa=pf_pa,
+        streaks=streaks,
+        power_ranked=power_ranked,
+        is_knockout=is_knockout,
+        knockout_champion=knockout_champion,
+        my_team_id=get_my_team_id(league_id, teams),
+    )
+
+
 @app.route("/leagues/<int:league_id>/messages", methods=["GET", "POST"])
 def league_messages(league_id):
     db = get_db()
@@ -4175,6 +4222,64 @@ def get_points_for_against(db, league_id):
         b[0] += m["team_b_score"]
         b[1] += m["team_a_score"]
     return pf_pa
+
+
+def get_streaks(db, league_id, teams):
+    """{team_id: 'W3'/'L2'/None} -- the team's current run of consecutive
+    wins or losses, read off real matchup history in week order (None if
+    they haven't played a scored matchup yet). A tied matchup breaks both
+    teams' streaks (counted as its own single-length 'T1')."""
+    rows = db.execute(
+        "SELECT * FROM matchups WHERE league_id = ? AND played = 1 AND team_b_id IS NOT NULL ORDER BY week",
+        (league_id,),
+    ).fetchall()
+    results_by_team = {}
+    for m in rows:
+        if m["team_a_score"] == m["team_b_score"]:
+            a_result, b_result = "T", "T"
+        elif m["team_a_score"] > m["team_b_score"]:
+            a_result, b_result = "W", "L"
+        else:
+            a_result, b_result = "L", "W"
+        results_by_team.setdefault(m["team_a_id"], []).append(a_result)
+        results_by_team.setdefault(m["team_b_id"], []).append(b_result)
+
+    streaks = {}
+    for t in teams:
+        seq = results_by_team.get(t["id"])
+        if not seq:
+            streaks[t["id"]] = None
+            continue
+        last = seq[-1]
+        count = 0
+        for r in reversed(seq):
+            if r != last:
+                break
+            count += 1
+        streaks[t["id"]] = f"{last}{count}"
+    return streaks
+
+
+def compute_power_rankings(teams, pf_pa):
+    """RIVYL Power Ranking -- a real-money-no-fabrication ordering, not a
+    playoff-odds model (this app has no playoff bracket yet, so a made-up
+    percentage would just be theater). Blends win% with points-for, each
+    normalized to this league's own range, so a team winning close-but-ugly
+    games and a team losing shootouts both land where they actually belong
+    instead of by raw win-loss record alone. Ties resolve toward the better
+    scorer, which is the whole point of a power ranking existing separately
+    from standings."""
+    filled = [t for t in teams if t["status"] == "filled"]
+    max_pf = max((pf_pa.get(t["id"], [0.0, 0.0])[0] for t in filled), default=0.0) or 1.0
+    ranked = []
+    for t in filled:
+        pf, pa = pf_pa.get(t["id"], [0.0, 0.0])
+        games = t["wins"] + t["losses"]
+        win_pct = t["wins"] / games if games else 0.0
+        score = round(50 * win_pct + 50 * (pf / max_pf), 1)
+        ranked.append({"team": t, "pf": pf, "pa": pa, "win_pct": win_pct, "score": score})
+    ranked.sort(key=lambda r: -r["score"])
+    return ranked
 
 
 def get_week_status(db, week):

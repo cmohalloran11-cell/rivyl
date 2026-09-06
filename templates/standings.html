@@ -1,0 +1,105 @@
+{% extends "base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Standings &mdash; {{ league['name'] }}{% endblock %}
+{% block league_nav %}{{ macros.league_tabs(league, my_team_id, 'standings') }}{% endblock %}
+{% block content %}
+  <h1>Standings</h1>
+  <p class="subtitle">{{ league['name'] }} &middot; {{ league['num_teams'] }} teams &middot; {{ league['scoring'] }}</p>
+
+  <table class="teams-table">
+    <thead>
+      <tr>
+        <th>Rank</th>
+        <th>Team</th>
+        <th>Owner</th>
+        <th class="num">{% if is_knockout %}Status{% else %}W-L{% endif %}</th>
+        {% if not is_knockout %}
+          <th class="num">Win%</th>
+          <th class="num">PF</th>
+          <th class="num">PA</th>
+          <th class="num">Streak</th>
+        {% endif %}
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for team in standings_teams %}
+        <tr class="{% if my_team_id == team['id'] %}row-mine{% endif %} {% if team['status'] == 'open' %}row-open{% endif %}">
+          <td class="rank-cell {% if loop.index == 1 %}rank-1{% elif loop.index == 2 %}rank-2{% elif loop.index == 3 %}rank-3{% endif %}">{{ loop.index }}</td>
+          <td class="player-name-cell">
+            {% if team['status'] == 'open' %}
+              <span class="open-slot">Open slot &mdash; awaiting invite</span>
+            {% else %}
+              <span class="cell-flex">
+                {{ macros.team_logo(team) }}
+                {{ team['team_name'] }}
+                {% if team['is_commissioner'] %}<span class="tag-commish">Commissioner</span>{% endif %}
+              </span>
+            {% endif %}
+          </td>
+          <td>{{ team['owner_name'] or (team['ai_personality'] if team['owner_type'] == 'ai' else '—') }}</td>
+          {% if is_knockout %}
+            <td class="num">
+              {% if team['eliminated_week'] is none %}
+                {% if knockout_champion and knockout_champion['id'] == team['id'] %}
+                  <span class="badge badge-open">🏆 Champion</span>
+                {% else %}
+                  <span class="badge badge-open">Alive</span>
+                {% endif %}
+              {% else %}
+                <span class="badge badge-injury badge-injury-O">Out &mdash; Wk {{ team['eliminated_week'] }}</span>
+              {% endif %}
+            </td>
+          {% else %}
+            <td class="num stat-num">{{ team['wins'] }}-{{ team['losses'] }}</td>
+            <td class="num stat-num">
+              {% set games = team['wins'] + team['losses'] %}
+              {{ '%.0f%%'|format((team['wins'] / games * 100) if games else 0) }}
+            </td>
+            <td class="num stat-num">{{ '%.1f'|format(pf_pa.get(team['id'], [0.0, 0.0])[0]) }}</td>
+            <td class="num stat-num">{{ '%.1f'|format(pf_pa.get(team['id'], [0.0, 0.0])[1]) }}</td>
+            <td class="num">
+              {% set streak = streaks.get(team['id']) %}
+              {% if streak %}
+                <span class="badge {% if streak.startswith('W') %}badge-win{% elif streak.startswith('L') %}badge-loss{% else %}badge-open{% endif %}">{{ streak }}</span>
+              {% else %}
+                &mdash;
+              {% endif %}
+            </td>
+          {% endif %}
+          <td>
+            {% if team['status'] == 'filled' and league['draft_status'] != 'not_started' %}
+              <a class="link-back" href="{{ url_for('team_detail', league_id=league['id'], team_id=team['id']) }}">View &rarr;</a>
+            {% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  {% if power_ranked %}
+    <h2 class="section-title">RIVYL Power Ranking</h2>
+    <p class="hint">Blends record with points scored, not just wins and losses &mdash; a team winning ugly and a team losing shootouts both land where they actually belong.</p>
+    <div class="power-rank-list">
+      {% for r in power_ranked %}
+        {% set record_rank = standings_teams.index(r['team']) + 1 if r['team'] in standings_teams else loop.index %}
+        {% set delta = record_rank - loop.index %}
+        <div class="power-rank-row {% if my_team_id == r['team']['id'] %}row-mine{% endif %}">
+          <span class="rank-cell {% if loop.index == 1 %}rank-1{% elif loop.index == 2 %}rank-2{% elif loop.index == 3 %}rank-3{% endif %}">{{ loop.index }}</span>
+          <span class="cell-flex" style="flex:1;">
+            {{ macros.team_logo(r['team']) }}
+            {{ r['team']['team_name'] }}
+          </span>
+          <span class="stat-num">{{ r['score'] }}</span>
+          {% if delta > 0 %}
+            <span class="badge badge-win">▲ {{ delta }}</span>
+          {% elif delta < 0 %}
+            <span class="badge badge-loss">▼ {{ -delta }}</span>
+          {% else %}
+            <span class="badge badge-full">&mdash;</span>
+          {% endif %}
+        </div>
+      {% endfor %}
+    </div>
+  {% endif %}
+{% endblock %}
