@@ -5,6 +5,8 @@
   {% if my_team_id %}
   <a class="league-tab {% if active == 'roster' %}league-tab-active{% endif %}"
      href="{{ url_for('team_detail', league_id=league['id'], team_id=my_team_id) }}"><span class="league-tab-icon">📋</span> Roster</a>
+  <a class="league-tab {% if active == 'insights' %}league-tab-active{% endif %}"
+     href="{{ url_for('insights_page', league_id=league['id']) }}"><span class="league-tab-icon">🧠</span> Insights</a>
   {% endif %}
   <a class="league-tab {% if active == 'matchup' %}league-tab-active{% endif %}"
      href="{{ url_for('matchup_detail', league_id=league['id']) }}"><span class="league-tab-icon">⚔️</span> Matchup</a>

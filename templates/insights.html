@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Insights &mdash; {{ league['name'] }}{% endblock %}
+{% block league_nav %}{{ macros.league_tabs(league, my_team_id, 'insights') }}{% endblock %}
+{% block content %}
+  <h1>RIVYL Insights</h1>
+  <p class="subtitle">Smarter decisions. Better lineups.</p>
+
+  <div class="stat-card-row">
+    <div class="stat-card">
+      <div class="stat-card-value">{{ team_health }}<span style="font-size:1rem; color:var(--text-faint);">/100</span></div>
+      <div class="stat-card-label">Team Health</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-card-value">{{ roster_strength }}</div>
+      <div class="stat-card-label">Roster Strength</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-card-value">{{ depth_score }}</div>
+      <div class="stat-card-label">Depth</div>
+    </div>
+    {% if my_power_rank %}
+      <div class="stat-card">
+        <div class="stat-card-value">#{{ my_power_rank }}<span style="font-size:0.9rem; color:var(--text-faint);">/{{ power_total }}</span></div>
+        <div class="stat-card-label">Power Ranking</div>
+      </div>
+    {% endif %}
+    {% if weekly_edge is not none %}
+      <div class="stat-card">
+        <div class="stat-card-value" style="color:{% if weekly_edge >= 0 %}var(--live){% else %}var(--danger){% endif %};">
+          {{ '+' if weekly_edge >= 0 else '' }}{{ weekly_edge }}
+        </div>
+        <div class="stat-card-label">Weekly Edge{% if opponent_name %} vs {{ opponent_name }}{% endif %}</div>
+      </div>
+    {% endif %}
+  </div>
+
+  <h2 class="section-title">Start / Sit</h2>
+  {% if start_sit %}
+    <div class="grade-list">
+      {% for r in start_sit %}
+        <div class="grade-row">
+          <div style="flex:1;">
+            <div class="cell-flex">
+              <span class="badge badge-win">Start</span>
+              <strong>{{ r['start']['player_name'] }}</strong>
+              <span class="badge badge-pos badge-pos-{{ r['start']['position'] }}">{{ r['start']['position'] }}</span>
+            </div>
+            <p class="hint">over <strong>{{ r['sit']['player_name'] }}</strong> ({{ r['sit']['slot'] }}) &middot; +{{ r['edge'] }} proj</p>
+          </div>
+        </div>
+      {% endfor %}
+    </div>
+  {% else %}
+    <p class="empty-state">Your current lineup already looks optimal &mdash; no clear bench upgrades this week.</p>
+  {% endif %}
+
+  <h2 class="section-title">Waiver Targets</h2>
+  {% if waiver_targets %}
+    <div class="grade-list">
+      {% for p in waiver_targets %}
+        <div class="grade-row">
+          <span class="cell-flex" style="flex:1;">
+            <strong>{{ p['full_name'] }}</strong>
+            <span class="badge badge-pos badge-pos-{{ p['position'] }}">{{ p['position'] }}</span>
+            <span class="hint" style="margin:0;">{{ p['nfl_team'] or '—' }}</span>
+          </span>
+          <span class="stat-num">{{ '%.1f'|format(p['proj']) if p['proj'] is not none else '—' }} proj</span>
+          <a class="btn btn-small" href="{{ url_for('waiver_claim_builder', league_id=league['id'], player_id=p['id']) }}">Claim</a>
+        </div>
+      {% endfor %}
+    </div>
+  {% else %}
+    <p class="empty-state">No standout waiver targets at your weak spots right now.</p>
+  {% endif %}
+
+  <h2 class="section-title">Trade Targets</h2>
+  {% if trade_targets %}
+    <div class="grade-list">
+      {% for p in trade_targets %}
+        <div class="grade-row">
+          <span class="cell-flex" style="flex:1;">
+            <strong>{{ p['player_name'] }}</strong>
+            <span class="badge badge-pos badge-pos-{{ p['position'] }}">{{ p['position'] }}</span>
+          </span>
+          <a class="btn btn-small btn-secondary" href="{{ url_for('trades_page', league_id=league['id']) }}">Trade For</a>
+        </div>
+      {% endfor %}
+    </div>
+  {% else %}
+    <p class="empty-state">No trade targets to show yet.</p>
+  {% endif %}
+{% endblock %}

@@ -3484,6 +3484,141 @@ def schedule_page(league_id):
     )
 
 
+def health_score(my_value, league_avg):
+    """0-100, centered on 50 for exactly league-average -- not a percentile,
+    just a plain linear read on how far above/below average this team's
+    real total is. Capped so one huge outlier team can't blow the scale."""
+    if not league_avg:
+        return 50
+    ratio = my_value / league_avg
+    return max(0, min(100, round(50 + (ratio - 1.0) * 100)))
+
+
+@app.route("/leagues/<int:league_id>/insights")
+def insights_page(league_id):
+    db = get_db()
+    league = db.execute("SELECT * FROM leagues WHERE id = ?", (league_id,)).fetchone()
+    if league is None:
+        flash("League not found.")
+        return redirect(url_for("index"))
+
+    teams = db.execute(
+        "SELECT * FROM teams WHERE league_id = ? ORDER BY slot_index", (league_id,)
+    ).fetchall()
+    my_team_id = get_my_team_id(league_id, teams)
+    if my_team_id is None:
+        flash("Join this league to see your RIVYL Insights.")
+        return redirect(url_for("league_home", league_id=league_id))
+    if league["draft_status"] != "complete":
+        flash("Insights are available once the draft is complete.")
+        return redirect(url_for("league_home", league_id=league_id))
+
+    schedule_map = get_schedule_map(db, league["current_week"])
+    market_map = get_market_projection_map(db)
+    scoring = league["scoring"]
+    roster_config = get_roster_config(league)
+    slot_eligibility = roster_slot_eligible_positions(roster_config)
+
+    filled_teams = [t for t in teams if t["status"] == "filled"]
+    starters_by_team, bench_by_team = {}, {}
+    for t in filled_teams:
+        s, b = build_lineup(db, league_id, t["id"])
+        starters_by_team[t["id"]] = with_projections(s, scoring, schedule_map, market_map)
+        bench_by_team[t["id"]] = with_projections(b, scoring, schedule_map, market_map)
+
+    def team_total(rows):
+        return sum(r["proj"] or 0.0 for r in rows)
+
+    my_starters = starters_by_team[my_team_id]
+    my_bench = bench_by_team[my_team_id]
+    my_starter_total = team_total(my_starters)
+    my_bench_total = team_total(my_bench)
+    league_starter_avg = sum(team_total(starters_by_team[t["id"]]) for t in filled_teams) / len(filled_teams)
+    league_bench_avg = sum(team_total(bench_by_team[t["id"]]) for t in filled_teams) / len(filled_teams)
+
+    roster_strength = health_score(my_starter_total, league_starter_avg)
+    depth_score = health_score(my_bench_total, league_bench_avg)
+    team_health = round((roster_strength + depth_score) / 2)
+
+    power_ranked = compute_power_rankings(teams, get_points_for_against(db, league_id))
+    my_power = next((r for r in power_ranked if r["team"]["id"] == my_team_id), None)
+    my_power_rank = power_ranked.index(my_power) + 1 if my_power else None
+
+    # This week's matchup edge -- a real projected margin, not a fabricated
+    # win-probability percentage this app has no real distribution to back.
+    weekly_edge = None
+    opponent_name = None
+    if league["league_format"] != "Knockout":
+        m = db.execute(
+            "SELECT * FROM matchups WHERE league_id = ? AND week = ? AND (team_a_id = ? OR team_b_id = ?) ORDER BY id LIMIT 1",
+            (league_id, league["current_week"], my_team_id, my_team_id),
+        ).fetchone()
+        if m:
+            opp_id = m["team_b_id"] if m["team_a_id"] == my_team_id else m["team_a_id"]
+            if opp_id:
+                opp_team = next((t for t in teams if t["id"] == opp_id), None)
+                opponent_name = opp_team["team_name"] if opp_team else None
+                opp_total = team_total(starters_by_team.get(opp_id) or with_projections(
+                    build_lineup(db, league_id, opp_id)[0], scoring, schedule_map, market_map))
+                weekly_edge = round(my_starter_total - opp_total, 1)
+
+    # Start/Sit: any bench player who out-projects the starter in a slot
+    # they're eligible for -- real proj-vs-proj comparison, capped so this
+    # doesn't turn into a wall of noise for a fringe 0.3-point edge.
+    start_sit = []
+    for slot in my_starters:
+        if slot["player_id"] is None:
+            continue
+        eligible = slot_eligibility.get(slot["slot_code"], set())
+        better = [b for b in my_bench if b["position"] in eligible and (b["proj"] or 0) > (slot["proj"] or 0) + 1.0]
+        if better:
+            best = max(better, key=lambda b: b["proj"] or 0)
+            start_sit.append({
+                "start": best, "sit": slot,
+                "edge": round((best["proj"] or 0) - (slot["proj"] or 0), 1),
+            })
+    start_sit.sort(key=lambda r: -r["edge"])
+    start_sit = start_sit[:3]
+
+    # Waiver targets: best available proj at whichever starting position
+    # this roster is thinnest at (lowest total bench+starter proj vs league
+    # average for that position).
+    weak_positions = sorted(
+        (pos for pos in POSITION_ORDER if roster_config.get(pos, 0) > 0),
+        key=lambda pos: sum(r["proj"] or 0 for r in my_starters + my_bench if r["position"] == pos),
+    )
+    available = get_available_players(db, league_id, scoring, roster_config)
+    waiver_targets = []
+    for pos in weak_positions:
+        pick = next((p for p in available if p["position"] == pos and p["proj"]), None)
+        if pick:
+            waiver_targets.append(pick)
+        if len(waiver_targets) >= 3:
+            break
+
+    # Trade targets: highest real trade value (same curve the draft/trade
+    # engine already scores against) sitting on someone else's roster.
+    other_picks = db.execute(
+        """
+        SELECT dp.* FROM draft_picks dp
+        WHERE dp.league_id = ? AND dp.player_id IS NOT NULL AND dp.team_id != ?
+        """,
+        (league_id, my_team_id),
+    ).fetchall()
+    trade_targets = sorted(
+        other_picks, key=lambda p: -player_trade_value(p["player_rank"])
+    )[:5]
+
+    return render_template(
+        "insights.html",
+        league=league, my_team_id=my_team_id,
+        team_health=team_health, roster_strength=roster_strength, depth_score=depth_score,
+        my_power_rank=my_power_rank, power_total=len(power_ranked),
+        weekly_edge=weekly_edge, opponent_name=opponent_name,
+        start_sit=start_sit, waiver_targets=waiver_targets, trade_targets=trade_targets,
+    )
+
+
 @app.route("/leagues/<int:league_id>/players/<player_id>")
 def player_profile(league_id, player_id):
     db = get_db()
