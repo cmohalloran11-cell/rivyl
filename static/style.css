@@ -465,13 +465,28 @@ input:focus, select:focus {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  background: var(--bg);
+  background: var(--bg-elevated);
   border: 1px solid var(--border);
-  border-radius: 9px;
-  padding: 8px 10px;
+  border-radius: 11px;
+  padding: 9px 11px;
 }
 .roster-stepper-bench { border-color: var(--border-bright); }
-.roster-stepper-label { font-size: 0.85rem; font-weight: 700; color: var(--text); }
+.roster-stepper-label {
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  padding: 5px 10px;
+  border-radius: 999px;
+  background: rgba(148, 152, 184, 0.15);
+  color: var(--text-dim);
+}
+.roster-stepper-row[data-pos="QB"] .roster-stepper-label { background: rgba(59, 130, 246, 0.18); color: var(--pos-qb); }
+.roster-stepper-row[data-pos="RB"] .roster-stepper-label { background: rgba(34, 197, 94, 0.18); color: var(--pos-rb); }
+.roster-stepper-row[data-pos="WR"] .roster-stepper-label { background: rgba(34, 211, 238, 0.18); color: var(--pos-wr); }
+.roster-stepper-row[data-pos="TE"] .roster-stepper-label { background: rgba(245, 158, 11, 0.18); color: var(--pos-te); }
+.roster-stepper-row[data-pos="K"] .roster-stepper-label { background: rgba(234, 179, 8, 0.18); color: var(--pos-k); }
+.roster-stepper-row[data-pos="DEF"] .roster-stepper-label { background: rgba(239, 68, 68, 0.18); color: var(--pos-def); }
+.roster-stepper-row[data-pos="FLEX"] .roster-stepper-label { background: var(--accent-soft); color: var(--accent-strong); }
 .roster-stepper-controls { display: flex; align-items: center; gap: 8px; }
 .roster-stepper-btn {
   width: 26px;
@@ -841,6 +856,16 @@ input:focus, select:focus {
 .roster-preview-row { display: flex; align-items: center; gap: 10px; font-size: 0.85rem; padding: 4px 0; }
 .roster-preview-name { font-weight: 700; flex: 1; }
 .roster-preview-proj { color: var(--text-dim); font-variant-numeric: tabular-nums; }
+
+.roster-preview-list label.randomize-order-check {
+  padding: 9px 12px;
+  border-radius: 10px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+.roster-preview-list label.randomize-order-check:hover { border-color: var(--accent-dim); background: var(--bg-elevated-2); }
+.roster-preview-list label.randomize-order-check:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
 
 /* ---- Player rows (roster / players list) ---- */
 
