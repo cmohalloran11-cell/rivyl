@@ -18,10 +18,15 @@
     </a>
     <div class="topbar-actions">
       <a class="btn btn-small" href="{{ url_for('new_league') }}">+ Create League</a>
-      <form method="post" action="{{ url_for('logout') }}"
-            onsubmit="return confirm('Log out of every team on this browser? Anyone using this device afterward will need to rejoin.');">
-        <button class="btn btn-small btn-secondary" type="submit">Log out</button>
-      </form>
+      {% if current_user %}
+        <span class="topbar-username">{{ current_user['username'] }}</span>
+        <form method="post" action="{{ url_for('logout') }}">
+          <button class="btn btn-small btn-secondary" type="submit">Log out</button>
+        </form>
+      {% else %}
+        <a class="btn btn-small btn-secondary" href="{{ url_for('login') }}">Log in</a>
+        <a class="btn btn-small btn-secondary" href="{{ url_for('register') }}">Register</a>
+      {% endif %}
     </div>
   </header>
 

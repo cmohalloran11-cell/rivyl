@@ -12,6 +12,7 @@ import psycopg2
 import psycopg2.extras
 import requests
 from flask import Flask, g, jsonify, redirect, render_template, request, session, url_for, flash
+from werkzeug.security import generate_password_hash, check_password_hash
 
 # Postgres (Neon / Vercel Postgres) -- this app used to run on a local SQLite
 # file, which doesn't work on serverless platforms (read-only filesystem, no
@@ -424,6 +425,18 @@ def close_db(exc):
         db.close()
 
 
+@app.context_processor
+def inject_current_user():
+    # base.html's header (logged-in-as / log out vs. log in / register)
+    # needs this on every page, not just the ones that already fetch it --
+    # a context processor beats threading current_user through every single
+    # render_template call.
+    try:
+        return {"current_user": get_current_user(get_db())}
+    except RuntimeError:
+        return {"current_user": None}
+
+
 def init_db():
     if not DATABASE_URL:
         raise RuntimeError(
@@ -434,6 +447,13 @@ def init_db():
     db = PGConnection(raw)
     db.executescript(
         """
+        CREATE TABLE IF NOT EXISTS users (
+            id SERIAL PRIMARY KEY,
+            username TEXT NOT NULL UNIQUE,
+            password_hash TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
         CREATE TABLE IF NOT EXISTS leagues (
             id SERIAL PRIMARY KEY,
             name TEXT NOT NULL,
@@ -628,6 +648,7 @@ def init_db():
             "logo_color": "ALTER TABLE teams ADD COLUMN logo_color TEXT",
             "eliminated_week": "ALTER TABLE teams ADD COLUMN eliminated_week INTEGER",
             "queue_json": "ALTER TABLE teams ADD COLUMN queue_json TEXT",
+            "user_id": "ALTER TABLE teams ADD COLUMN user_id INTEGER",
         },
         "nfl_games": {
             "stats_synced": "ALTER TABLE nfl_games ADD COLUMN stats_synced INTEGER NOT NULL DEFAULT 0",
@@ -1210,64 +1231,164 @@ def generate_invite_code():
 
 
 def get_my_team_id(league_id, teams):
-    """No accounts/auth here -- 'my team' is whichever team this browser session
-    created or joined as. Falls back to the first human team, then any team."""
-    session_key = f"team_{league_id}"
-    team_id = session.get(session_key)
-    if team_id and any(t["id"] == team_id for t in teams):
-        return team_id
-    human = next((t for t in teams if t["owner_type"] == "human" and t["status"] == "filled"), None)
-    if human:
-        return human["id"]
-    return teams[0]["id"] if teams else None
+    """'My team' is whichever team in this league's roster is owned by the
+    logged-in account. No login, no guessing, no fallback -- unlike the old
+    session-cookie-only system, not being logged in (or not owning a team
+    here) means you have no team in this league, full stop."""
+    user_id = session.get("user_id")
+    if not user_id:
+        return None
+    match = next((t for t in teams if t["user_id"] == user_id), None)
+    return match["id"] if match else None
 
 
 def is_league_creator(db, league_id):
-    """True if this browser session created the league (i.e. holds the
-    commissioner's team slot). Our only proxy for 'ownership' -- no accounts."""
+    """True if the logged-in account owns this league's commissioner team."""
+    user_id = session.get("user_id")
+    if not user_id:
+        return False
     commish = db.execute(
-        "SELECT id FROM teams WHERE league_id = ? AND is_commissioner = 1", (league_id,)
+        "SELECT 1 FROM teams WHERE league_id = ? AND is_commissioner = 1 AND user_id = ?",
+        (league_id, user_id),
     ).fetchone()
-    return commish is not None and session.get(f"team_{league_id}") == commish["id"]
+    return commish is not None
+
+
+def get_current_user(db):
+    user_id = session.get("user_id")
+    if not user_id:
+        return None
+    return db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+
+
+def auto_claim_legacy_teams(db, user_id):
+    """One-time bridge for the old cookie-only identity system: before real
+    accounts existed, "being" a team was just this browser's session
+    remembering a team_id per league. If this session still remembers one
+    and nobody has claimed that team on an account yet, attach it to the
+    account that just logged in, so existing rosters/drafts aren't orphaned
+    by switching to real login. Never reassigns a team that's already
+    owned -- that would be its own account-takeover bug."""
+    for key, team_id in list(session.items()):
+        if not key.startswith("team_") or not isinstance(team_id, int):
+            continue
+        team = db.execute("SELECT * FROM teams WHERE id = ?", (team_id,)).fetchone()
+        if team is not None and team["user_id"] is None:
+            db.execute("UPDATE teams SET user_id = ? WHERE id = ?", (user_id, team_id))
+        session.pop(key, None)
+    db.commit()
+
+
+@app.route("/register", methods=["GET", "POST"])
+def register():
+    if session.get("user_id"):
+        return redirect(url_for("index"))
+    next_url = request.values.get("next") or url_for("index")
+    if request.method == "GET":
+        return render_template("register.html", next_url=next_url)
+
+    username = request.form.get("username", "").strip()
+    password = request.form.get("password", "")
+    confirm_password = request.form.get("confirm_password", "")
+    next_url = request.form.get("next") or url_for("index")
+
+    errors = []
+    if not re.fullmatch(r"[A-Za-z0-9_]{3,30}", username):
+        errors.append("Username must be 3-30 characters: letters, numbers, underscore only.")
+    if len(password) < 8:
+        errors.append("Password must be at least 8 characters.")
+    if password != confirm_password:
+        errors.append("Passwords don't match.")
+
+    db = get_db()
+    if not errors and db.execute("SELECT 1 FROM users WHERE username = ?", (username,)).fetchone():
+        errors.append("That username is already taken.")
+
+    if errors:
+        for e in errors:
+            flash(e)
+        return redirect(url_for("register", next=next_url))
+
+    user_id = db.execute(
+        "INSERT INTO users (username, password_hash) VALUES (?, ?) RETURNING id",
+        (username, generate_password_hash(password)),
+    ).fetchone()["id"]
+    db.commit()
+    # Read (and pop) any legacy team_* keys before clearing the session --
+    # session.clear() first would silently throw away exactly what the
+    # migration needs to find.
+    auto_claim_legacy_teams(db, user_id)
+    session.clear()
+    session["user_id"] = user_id
+    session["username"] = username
+    flash(f"Welcome, {username}!")
+    return redirect(next_url)
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if session.get("user_id"):
+        return redirect(url_for("index"))
+    next_url = request.values.get("next") or url_for("index")
+    if request.method == "GET":
+        return render_template("login.html", next_url=next_url)
+
+    username = request.form.get("username", "").strip()
+    password = request.form.get("password", "")
+    next_url = request.form.get("next") or url_for("index")
+
+    db = get_db()
+    user = db.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
+    if user is None or not check_password_hash(user["password_hash"], password):
+        flash("Incorrect username or password.")
+        return redirect(url_for("login", next=next_url))
+
+    # Read (and pop) any legacy team_* keys before clearing the session --
+    # session.clear() first would silently throw away exactly what the
+    # migration needs to find.
+    auto_claim_legacy_teams(db, user["id"])
+    session.clear()
+    session["user_id"] = user["id"]
+    session["username"] = user["username"]
+    return redirect(next_url)
 
 
 @app.route("/")
 def index():
     db = get_db()
+    current_user = get_current_user(db)
     leagues = db.execute(
         """
         SELECT l.*,
                (SELECT COUNT(*) FROM teams t WHERE t.league_id = l.id AND t.status = 'open') AS open_slots,
-               (SELECT id FROM teams t WHERE t.league_id = l.id AND t.is_commissioner = 1) AS commissioner_team_id
+               (SELECT id FROM teams t WHERE t.league_id = l.id AND t.is_commissioner = 1) AS commissioner_team_id,
+               (SELECT user_id FROM teams t WHERE t.league_id = l.id AND t.is_commissioner = 1) AS commissioner_user_id
         FROM leagues l
         ORDER BY l.created_at DESC
         """
     ).fetchall()
     deletable_ids = {
         l["id"] for l in leagues
-        if l["commissioner_team_id"] is not None
-        and session.get(f"team_{l['id']}") == l["commissioner_team_id"]
+        if current_user is not None
+        and l["commissioner_user_id"] is not None
+        and l["commissioner_user_id"] == current_user["id"]
     }
-    return render_template("index.html", leagues=leagues, deletable_ids=deletable_ids)
+    return render_template("index.html", leagues=leagues, deletable_ids=deletable_ids, current_user=current_user)
 
 
 @app.route("/logout", methods=["POST"])
 def logout():
-    # There's no login/password -- "being" a team is just this browser's
-    # session cookie remembering which team_id you claimed in each league.
-    # That means anyone using the same browser afterward (a shared computer,
-    # a borrowed phone) silently inherits every team that session is bound
-    # to, with no way to tell or back out. Wiping the whole session here is
-    # the escape hatch: it forgets every team in every league for this
-    # browser, so a fresh visitor (or the real owner, next time) starts
-    # clean and has to rejoin/re-claim explicitly.
     session.clear()
-    flash("Logged out of all teams on this browser.")
+    flash("Logged out.")
     return redirect(url_for("index"))
 
 
 @app.route("/leagues/new", methods=["GET", "POST"])
 def new_league():
+    if not session.get("user_id"):
+        flash("Log in first to create a league.")
+        return redirect(url_for("login", next=url_for("new_league")))
+
     if request.method == "GET":
         return render_template(
             "create_league.html",
@@ -1354,16 +1475,15 @@ def new_league():
 
     slot_index = 1
 
-    commish_cur = db.execute(
+    db.execute(
         """
         INSERT INTO teams (league_id, slot_index, owner_type, status, team_name,
-                            owner_name, is_commissioner)
-        VALUES (?, ?, 'human', 'filled', ?, ?, 1)
-        RETURNING id
+                            owner_name, is_commissioner, user_id)
+        VALUES (?, ?, 'human', 'filled', ?, ?, 1, ?)
         """,
-        (league_id, slot_index, commissioner_team_name or f"{commissioner_name}'s Team", commissioner_name),
+        (league_id, slot_index, commissioner_team_name or f"{commissioner_name}'s Team", commissioner_name,
+         session["user_id"]),
     )
-    session[f"team_{league_id}"] = commish_cur.fetchone()["id"]
     slot_index += 1
 
     for _ in range(num_human_slots - 1):
@@ -2399,6 +2519,10 @@ def join_by_code():
 
 @app.route("/join/<code>", methods=["GET", "POST"])
 def join_league(code):
+    if not session.get("user_id"):
+        flash("Log in first to join a league.")
+        return redirect(url_for("login", next=url_for("join_league", code=code)))
+
     db = get_db()
     league = db.execute("SELECT * FROM leagues WHERE invite_code = ?", (code.strip().upper(),)).fetchone()
     if league is None:
@@ -2428,13 +2552,12 @@ def join_league(code):
     db.execute(
         """
         UPDATE teams
-        SET status = 'filled', owner_name = ?, team_name = ?
+        SET status = 'filled', owner_name = ?, team_name = ?, user_id = ?
         WHERE id = ?
         """,
-        (owner_name, team_name, next_slot["id"]),
+        (owner_name, team_name, session["user_id"], next_slot["id"]),
     )
     db.commit()
-    session[f"team_{league['id']}"] = next_slot["id"]
     return redirect(url_for("league_home", league_id=league["id"]))
 
 
@@ -4056,10 +4179,12 @@ def draft_pick(league_id):
         return jsonify({"error": "not_your_turn", **build_state(league_id)}), 409
 
     # Whoever is on the clock is a *human team*, but that doesn't mean it's
-    # THIS browser's team -- without this check, any visitor watching the
+    # THIS account's team -- without this check, any visitor watching the
     # draft room could submit a pick on behalf of whichever human happens to
     # be up, which is exactly what was happening.
-    if session.get(f"team_{league_id}") != pick_row["team_id"]:
+    user_id = session.get("user_id")
+    owner = db.execute("SELECT user_id FROM teams WHERE id = ?", (pick_row["team_id"],)).fetchone()
+    if not user_id or owner is None or owner["user_id"] != user_id:
         return jsonify({"error": "not_your_turn", **build_state(league_id)}), 403
 
     player = db.execute(
@@ -4113,9 +4238,15 @@ def draft_pick(league_id):
 @app.route("/leagues/<int:league_id>/draft/queue", methods=["POST"])
 def draft_queue(league_id):
     db = get_db()
-    team_id = session.get(f"team_{league_id}")
-    if team_id is None:
+    user_id = session.get("user_id")
+    if user_id is None:
         return jsonify({"error": "not_your_turn"}), 403
+    team = db.execute(
+        "SELECT id FROM teams WHERE league_id = ? AND user_id = ?", (league_id, user_id)
+    ).fetchone()
+    if team is None:
+        return jsonify({"error": "not_your_turn"}), 403
+    team_id = team["id"]
 
     payload = request.get_json(silent=True) or {}
     raw_ids = payload.get("player_ids")

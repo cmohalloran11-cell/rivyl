@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}Log In{% endblock %}
+{% block content %}
+  <h1>Log In</h1>
+  <p class="subtitle">Log in to see and manage your teams.</p>
+
+  <form class="card form" method="post" action="{{ url_for('login') }}">
+    <input type="hidden" name="next" value="{{ next_url }}">
+    <label>Username
+      <input type="text" name="username" placeholder="Username" required autofocus>
+    </label>
+    <label>Password
+      <input type="password" name="password" placeholder="Password" required>
+    </label>
+    <button class="btn" type="submit">Log In</button>
+  </form>
+
+  <p class="hint">No account yet? <a href="{{ url_for('register', next=next_url) }}">Register</a> instead.</p>
+{% endblock %}

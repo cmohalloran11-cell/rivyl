@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Register{% endblock %}
+{% block content %}
+  <h1>Register</h1>
+  <p class="subtitle">Create an account so your teams belong to you, not just whichever browser you're on.</p>
+
+  <form class="card form" method="post" action="{{ url_for('register') }}">
+    <input type="hidden" name="next" value="{{ next_url }}">
+    <label>Username
+      <input type="text" name="username" placeholder="3-30 characters, letters/numbers/underscore" required autofocus minlength="3" maxlength="30" pattern="[A-Za-z0-9_]+">
+    </label>
+    <label>Password
+      <input type="password" name="password" placeholder="At least 8 characters" required minlength="8">
+    </label>
+    <label>Confirm password
+      <input type="password" name="confirm_password" placeholder="Same password again" required minlength="8">
+    </label>
+    <button class="btn" type="submit">Create Account</button>
+  </form>
+
+  <p class="hint">Already have an account? <a href="{{ url_for('login', next=next_url) }}">Log in</a> instead.</p>
+{% endblock %}

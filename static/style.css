@@ -136,6 +136,12 @@ button, .btn, .btn-small, input, select {
   gap: 10px;
 }
 
+.topbar-username {
+  color: var(--text-dim);
+  font-size: 0.83rem;
+  font-weight: 600;
+}
+
 .brand {
   color: var(--text);
   text-decoration: none;
