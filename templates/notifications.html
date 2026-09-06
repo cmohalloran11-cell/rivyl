@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}Notifications &mdash; RIVYL{% endblock %}
+{% block content %}
+  <div class="cell-flex" style="justify-content:space-between; align-items:baseline;">
+    <div>
+      <h1 style="margin-bottom:2px;">Notifications</h1>
+      <p class="hint" style="margin:0;">{{ unread_count }} unread</p>
+    </div>
+    {% if unread_count %}
+      <form method="post" action="{{ url_for('mark_notifications_read') }}">
+        <button class="btn btn-small btn-secondary" type="submit">Mark all as read</button>
+      </form>
+    {% endif %}
+  </div>
+
+  {% if live_alerts %}
+    <h2 class="section-title">Needs Attention</h2>
+    <div class="activity-feed">
+      {% for a in live_alerts %}
+        <a class="activity-row" style="text-decoration:none; color:inherit;"
+           href="{{ url_for('home_page', league_id=a['league_id']) }}">
+          <span class="activity-icon">⚠️</span>
+          <span style="flex:1;">
+            <strong>{{ a['title'] }}</strong>
+            <span class="hint" style="display:block; margin:0;">{{ a['detail'] }}</span>
+          </span>
+        </a>
+      {% endfor %}
+    </div>
+  {% endif %}
+
+  <h2 class="section-title">Recent</h2>
+  {% if stored %}
+    <div class="activity-feed">
+      {% for n in stored %}
+        <div class="activity-row {% if not n['read_at'] %}row-mine{% endif %}">
+          <span class="activity-icon">{{ kind_icons.get(n['kind'], '🔔') }}</span>
+          <span style="flex:1;">
+            <strong>{{ n['title'] }}</strong>
+            {% if n['detail'] %}<span class="hint" style="display:block; margin:0;">{{ n['detail'] }}</span>{% endif %}
+          </span>
+          <span class="hint" style="margin:0; white-space:nowrap;">{{ n['created_at'][:16] }}</span>
+        </div>
+      {% endfor %}
+    </div>
+  {% else %}
+    <div class="empty-state">
+      <div class="empty-state-icon">🔔</div>
+      <h3>No notifications yet</h3>
+      <p>Trade offers, waiver claim results, and more will show up here.</p>
+    </div>
+  {% endif %}
+{% endblock %}

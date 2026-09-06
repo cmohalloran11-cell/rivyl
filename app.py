@@ -432,9 +432,16 @@ def inject_current_user():
     # a context processor beats threading current_user through every single
     # render_template call.
     try:
-        return {"current_user": get_current_user(get_db())}
+        db = get_db()
+        user = get_current_user(db)
+        unread = 0
+        if user is not None:
+            unread = db.execute(
+                "SELECT COUNT(*) FROM notifications WHERE user_id = ? AND read_at IS NULL", (user["id"],)
+            ).fetchone()[0]
+        return {"current_user": user, "unread_notifications": unread}
     except RuntimeError:
-        return {"current_user": None}
+        return {"current_user": None, "unread_notifications": 0}
 
 
 def init_db():
@@ -621,6 +628,17 @@ def init_db():
             team_id INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
             body TEXT NOT NULL,
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        CREATE TABLE IF NOT EXISTS notifications (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            league_id INTEGER REFERENCES leagues(id) ON DELETE CASCADE,
+            kind TEXT NOT NULL,
+            title TEXT NOT NULL,
+            detail TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            read_at TEXT
         );
 
         CREATE TABLE IF NOT EXISTS waiver_claims (
@@ -1885,6 +1903,68 @@ def user_profile():
     )
 
 
+NOTIFICATION_ICON = {"trade": "🤝", "waiver": "📝", "lineup": "⚠️", "draft": "🎙️"}
+
+
+@app.route("/notifications")
+def notifications_page():
+    db = get_db()
+    current_user = get_current_user(db)
+    if current_user is None:
+        flash("Log in to see your notifications.")
+        return redirect(url_for("login", next=url_for("notifications_page")))
+
+    stored = db.execute(
+        "SELECT * FROM notifications WHERE user_id = ? ORDER BY id DESC LIMIT 100",
+        (current_user["id"],),
+    ).fetchall()
+
+    # Live, always-current alerts computed fresh on every visit rather than
+    # stored -- an empty lineup slot isn't an event that happened at a point
+    # in time, it's a fact about right now, and it'd go stale the moment the
+    # user fixed it if this were a row sitting in the table instead.
+    live_alerts = []
+    my_teams = db.execute(
+        """
+        SELECT t.*, l.name AS league_name, l.id AS league_id FROM teams t
+        JOIN leagues l ON l.id = t.league_id
+        WHERE t.user_id = ? AND l.draft_status = 'complete'
+        """,
+        (current_user["id"],),
+    ).fetchall()
+    for t in my_teams:
+        starters, _ = build_lineup(db, t["league_id"], t["id"])
+        empty = [s["slot"] for s in starters if s["player_id"] is None]
+        if empty:
+            live_alerts.append({
+                "title": "Empty lineup slot",
+                "detail": f"{t['league_name']} — {', '.join(empty)} open in your starting lineup.",
+                "league_id": t["league_id"],
+            })
+
+    unread_count = sum(1 for n in stored if n["read_at"] is None)
+
+    return render_template(
+        "notifications.html",
+        stored=stored, live_alerts=live_alerts, unread_count=unread_count,
+        kind_icons=NOTIFICATION_ICON,
+    )
+
+
+@app.route("/notifications/read-all", methods=["POST"])
+def mark_notifications_read():
+    db = get_db()
+    current_user = get_current_user(db)
+    if current_user is None:
+        return redirect(url_for("login"))
+    db.execute(
+        "UPDATE notifications SET read_at = datetime('now') WHERE user_id = ? AND read_at IS NULL",
+        (current_user["id"],),
+    )
+    db.commit()
+    return redirect(url_for("notifications_page"))
+
+
 @app.route("/logout", methods=["POST"])
 def logout():
     session.clear()
@@ -2816,6 +2896,12 @@ def propose_trade(league_id):
         _, message = resolve_trade(db, league_id, trade_id, resolver="ai")
         flash(message)
     else:
+        my_team = next(t for t in teams if t["id"] == my_team_id)
+        create_notification(
+            db, to_team["user_id"], league_id, "trade",
+            "Trade offer received", f"{my_team['team_name']} sent you a trade offer.",
+        )
+        db.commit()
         flash("Trade offer sent.")
 
     return redirect(url_for("trades_page", league_id=league_id))
@@ -4003,6 +4089,17 @@ def log_transaction(db, league_id, team_id, kind, detail):
     )
 
 
+def create_notification(db, user_id, league_id, kind, title, detail=None):
+    """No-op for an AI team or anyone with no account behind it -- only a
+    real logged-in human has anywhere to see a notification."""
+    if not user_id:
+        return
+    db.execute(
+        "INSERT INTO notifications (user_id, league_id, kind, title, detail) VALUES (?, ?, ?, ?, ?)",
+        (user_id, league_id, kind, title, detail),
+    )
+
+
 def get_roster_picks(db, league_id, team_id):
     return db.execute(
         """
@@ -4127,37 +4224,39 @@ def process_waiver_claims_for_player(db, league_id, player_id):
     league = db.execute("SELECT * FROM leagues WHERE id = ?", (league_id,)).fetchone()
     settled = False
     for c in claims:
-        if settled:
-            db.execute(
-                "UPDATE waiver_claims SET status = 'lost', reason = ?, processed_at = datetime('now') WHERE id = ?",
-                ("Lost the waiver — a higher (or earlier) claim on this player was processed first.", c["id"]),
-            )
-            continue
-
         team = db.execute("SELECT * FROM teams WHERE id = ?", (c["team_id"],)).fetchone()
-        if team["faab_balance"] < c["faab_bid"]:
-            db.execute(
-                "UPDATE waiver_claims SET status = 'lost', reason = ?, processed_at = datetime('now') WHERE id = ?",
-                ("Insufficient FAAB balance at processing time.", c["id"]),
-            )
-            continue
 
-        ok, message = execute_roster_move(
-            db, league, team, add_player_id=c["add_player_id"], drop_pick_id=c["drop_pick_id"],
-            note=f"Won waiver claim (${c['faab_bid']} FAAB).",
-        )
-        if ok:
-            db.execute("UPDATE teams SET faab_balance = faab_balance - ? WHERE id = ?", (c["faab_bid"], team["id"]))
-            db.execute(
-                "UPDATE waiver_claims SET status = 'won', reason = ?, processed_at = datetime('now') WHERE id = ?",
-                (message, c["id"]),
-            )
-            settled = True
+        if settled:
+            reason = "Lost the waiver — a higher (or earlier) claim on this player was processed first."
+        elif team["faab_balance"] < c["faab_bid"]:
+            reason = "Insufficient FAAB balance at processing time."
         else:
-            db.execute(
-                "UPDATE waiver_claims SET status = 'lost', reason = ?, processed_at = datetime('now') WHERE id = ?",
-                (message, c["id"]),
+            ok, message = execute_roster_move(
+                db, league, team, add_player_id=c["add_player_id"], drop_pick_id=c["drop_pick_id"],
+                note=f"Won waiver claim (${c['faab_bid']} FAAB).",
             )
+            if ok:
+                db.execute("UPDATE teams SET faab_balance = faab_balance - ? WHERE id = ?", (c["faab_bid"], team["id"]))
+                db.execute(
+                    "UPDATE waiver_claims SET status = 'won', reason = ?, processed_at = datetime('now') WHERE id = ?",
+                    (message, c["id"]),
+                )
+                create_notification(
+                    db, team["user_id"], league_id, "waiver",
+                    "Waiver claim successful", f"You won {c['add_player_name']} for ${c['faab_bid']} FAAB.",
+                )
+                settled = True
+                continue
+            reason = message
+
+        db.execute(
+            "UPDATE waiver_claims SET status = 'lost', reason = ?, processed_at = datetime('now') WHERE id = ?",
+            (reason, c["id"]),
+        )
+        create_notification(
+            db, team["user_id"], league_id, "waiver",
+            "Waiver claim unsuccessful", f"Your claim on {c['add_player_name']} didn't go through — {reason}",
+        )
     db.commit()
 
 
@@ -4568,6 +4667,12 @@ def resolve_trade(db, league_id, trade_id, action=None, resolver="human"):
                 "UPDATE trades SET status = 'rejected', ai_reason = ?, resolved_at = datetime('now') WHERE id = ?",
                 (reason, trade_id),
             )
+            if resolver == "human":
+                from_team = db.execute("SELECT * FROM teams WHERE id = ?", (trade["from_team_id"],)).fetchone()
+                create_notification(
+                    db, from_team["user_id"], league_id, "trade",
+                    "Trade rejected", f"Your trade offer was rejected.{f' {reason}' if reason else ''}",
+                )
             db.commit()
             return True, "Trade rejected."
 
@@ -4627,6 +4732,11 @@ def resolve_trade(db, league_id, trade_id, action=None, resolver="human"):
                      f"Traded {give_names} to {to_team['team_name']} for {receive_names}.")
     log_transaction(db, league_id, trade["to_team_id"], "trade",
                      f"Traded {receive_names} to {from_team['team_name']} for {give_names}.")
+    if resolver == "human":
+        create_notification(
+            db, from_team["user_id"], league_id, "trade",
+            "Trade accepted", f"{to_team['team_name']} accepted your trade — you received {receive_names}.",
+        )
     db.commit()
     return True, "Trade accepted."
 

@@ -184,6 +184,35 @@ button, .btn, .btn-small, input, select {
 }
 .sidebar-account form { display: contents; }
 
+.notif-bell {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px; height: 30px;
+  border-radius: 50%;
+  font-size: 0.95rem;
+  text-decoration: none;
+  flex-shrink: 0;
+}
+.notif-bell:hover { background: var(--bg-elevated-2); }
+.notif-bell-badge {
+  position: absolute;
+  top: -2px; right: -4px;
+  background: var(--danger);
+  color: #fff;
+  font-size: 0.6rem;
+  font-weight: 800;
+  border-radius: 999px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 3px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
 .topbar-username {
   color: var(--text-dim);
   font-size: 0.83rem;

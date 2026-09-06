@@ -26,6 +26,9 @@
         <a class="btn btn-small" href="{{ url_for('new_league') }}">+ Create League</a>
         {% if current_user %}
           <div class="sidebar-account">
+            <a class="notif-bell" href="{{ url_for('notifications_page') }}" title="Notifications">
+              🔔{% if unread_notifications %}<span class="notif-bell-badge">{{ unread_notifications if unread_notifications < 100 else '99+' }}</span>{% endif %}
+            </a>
             <a class="topbar-username" href="{{ url_for('user_profile') }}" style="text-decoration:none; color:inherit;">{{ current_user['username'] }}</a>
             <form method="post" action="{{ url_for('logout') }}">
               <button class="btn btn-small btn-secondary" type="submit">Log out</button>
