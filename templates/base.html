@@ -7,43 +7,54 @@
   <link rel="icon" type="image/png" href="{{ url_for('static', filename='logo.png') }}">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@600;700&family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
-  <header class="topbar">
-    <a class="brand" href="{{ url_for('index') }}">
-      <img class="brand-mark" src="{{ url_for('static', filename='logo.png') }}" alt="" aria-hidden="true">
-      RIVYL
-    </a>
-    <div class="topbar-actions">
-      <a class="btn btn-small" href="{{ url_for('new_league') }}">+ Create League</a>
-      {% if current_user %}
-        <span class="topbar-username">{{ current_user['username'] }}</span>
-        <form method="post" action="{{ url_for('logout') }}">
-          <button class="btn btn-small btn-secondary" type="submit">Log out</button>
-        </form>
-      {% else %}
-        <a class="btn btn-small btn-secondary" href="{{ url_for('login') }}">Log in</a>
-        <a class="btn btn-small btn-secondary" href="{{ url_for('register') }}">Register</a>
-      {% endif %}
-    </div>
-  </header>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <a class="brand" href="{{ url_for('index') }}">
+        <img class="brand-mark" src="{{ url_for('static', filename='logo.png') }}" alt="" aria-hidden="true">
+        RIVYL
+      </a>
 
-  {% block league_nav %}{% endblock %}
+      <nav class="league-tabs">
+        {% block league_nav %}{% endblock %}
+      </nav>
 
-  {% with messages = get_flashed_messages() %}
-    {% if messages %}
-      <div class="flash-wrap">
-        {% for message in messages %}
-          <div class="flash">{{ message }}</div>
-        {% endfor %}
+      <div class="sidebar-foot">
+        <a class="btn btn-small" href="{{ url_for('new_league') }}">+ Create League</a>
+        {% if current_user %}
+          <div class="sidebar-account">
+            <span class="topbar-username">{{ current_user['username'] }}</span>
+            <form method="post" action="{{ url_for('logout') }}">
+              <button class="btn btn-small btn-secondary" type="submit">Log out</button>
+            </form>
+          </div>
+        {% else %}
+          <div class="sidebar-account">
+            <a class="btn btn-small btn-secondary" href="{{ url_for('login') }}">Log in</a>
+            <a class="btn btn-small btn-secondary" href="{{ url_for('register') }}">Register</a>
+          </div>
+        {% endif %}
       </div>
-    {% endif %}
-  {% endwith %}
+    </aside>
 
-  <main class="page {% block page_class %}{% endblock %}">
-    {% block content %}{% endblock %}
-  </main>
+    <div class="main-col">
+      {% with messages = get_flashed_messages() %}
+        {% if messages %}
+          <div class="flash-wrap">
+            {% for message in messages %}
+              <div class="flash">{{ message }}</div>
+            {% endfor %}
+          </div>
+        {% endif %}
+      {% endwith %}
+
+      <main class="page {% block page_class %}{% endblock %}">
+        {% block content %}{% endblock %}
+      </main>
+    </div>
+  </div>
 </body>
 </html>
