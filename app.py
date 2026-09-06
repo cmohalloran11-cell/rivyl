@@ -1839,6 +1839,52 @@ def index():
     return render_template("index.html", leagues=leagues, deletable_ids=deletable_ids, current_user=current_user)
 
 
+@app.route("/profile")
+def user_profile():
+    db = get_db()
+    current_user = get_current_user(db)
+    if current_user is None:
+        flash("Log in to see your profile.")
+        return redirect(url_for("login", next=url_for("user_profile")))
+
+    my_teams = db.execute(
+        """
+        SELECT t.*, l.name AS league_name, l.scoring, l.league_format, l.num_teams, l.id AS league_id
+        FROM teams t JOIN leagues l ON l.id = t.league_id
+        WHERE t.user_id = ?
+        ORDER BY l.created_at DESC
+        """,
+        (current_user["id"],),
+    ).fetchall()
+
+    total_wins = sum(t["wins"] for t in my_teams)
+    total_losses = sum(t["losses"] for t in my_teams)
+    total_games = total_wins + total_losses
+    win_pct = round(total_wins / total_games * 100) if total_games else None
+
+    career_points = 0.0
+    championships = 0
+    for t in my_teams:
+        pf_pa = get_points_for_against(db, t["league_id"])
+        career_points += pf_pa.get(t["id"], [0.0, 0.0])[0]
+        if t["league_format"] == "Knockout":
+            alive, _ = get_knockout_standings(db, t["league_id"])
+            if len(alive) == 1 and alive[0]["id"] == t["id"]:
+                championships += 1
+
+    return render_template(
+        "user_profile.html",
+        current_user=current_user,
+        my_teams=my_teams,
+        total_wins=total_wins,
+        total_losses=total_losses,
+        win_pct=win_pct,
+        career_points=round(career_points, 1),
+        championships=championships,
+        initials=player_initials(current_user["username"]),
+    )
+
+
 @app.route("/logout", methods=["POST"])
 def logout():
     session.clear()

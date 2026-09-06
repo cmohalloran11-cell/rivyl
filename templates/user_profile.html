@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %}{{ current_user['username'] }} &mdash; RIVYL{% endblock %}
+{% block content %}
+  <div class="cell-flex" style="align-items:center; gap:16px; margin-bottom:6px;">
+    <span class="player-face player-face-md">
+      <span class="player-face-fallback">{{ initials }}</span>
+    </span>
+    <div>
+      <h1 style="margin-bottom:2px;">{{ current_user['username'] }}</h1>
+      <p class="hint" style="margin:0;">RIVYL member since {{ current_user['created_at'][:10] }}</p>
+    </div>
+  </div>
+
+  <div class="stat-card-row">
+    <div class="stat-card">
+      <div class="stat-card-value">{{ my_teams|length }}</div>
+      <div class="stat-card-label">Leagues</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-card-value">{{ total_wins }}-{{ total_losses }}</div>
+      <div class="stat-card-label">Record</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-card-value">{{ win_pct if win_pct is not none else '—' }}{% if win_pct is not none %}%{% endif %}</div>
+      <div class="stat-card-label">Win %</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-card-value">{{ career_points }}</div>
+      <div class="stat-card-label">Career Points</div>
+    </div>
+    {% if championships %}
+      <div class="stat-card">
+        <div class="stat-card-value">🏆 {{ championships }}</div>
+        <div class="stat-card-label">Championships</div>
+      </div>
+    {% endif %}
+  </div>
+
+  <h2 class="section-title">Leagues</h2>
+  {% if my_teams %}
+    <div class="league-grid">
+      {% for t in my_teams %}
+        <div class="league-card">
+          <a class="league-card-link" href="{{ url_for('league_home', league_id=t['league_id']) }}">
+            <div class="cell-flex">
+              <span class="league-card-name">{{ t['league_name'] }}</span>
+              {% if t['league_format'] and t['league_format'] != 'Redraft' %}
+                <span class="badge {% if t['league_format'] == 'Knockout' %}badge-ai{% else %}badge-human{% endif %}">
+                  {% if t['league_format'] == 'Knockout' %}🔪{% else %}👑{% endif %} {{ t['league_format'] }}
+                </span>
+              {% endif %}
+            </div>
+            <div class="league-card-meta">{{ t['team_name'] }} &middot; {{ t['num_teams'] }} teams &middot; {{ t['scoring'] }}</div>
+            <div class="league-card-meta">Record: {{ t['wins'] }}-{{ t['losses'] }}</div>
+          </a>
+        </div>
+      {% endfor %}
+    </div>
+  {% else %}
+    <div class="empty-state">
+      <div class="empty-state-icon">🏈</div>
+      <h3>No leagues yet</h3>
+      <p>Create or join a league to start building your RIVYL record.</p>
+      <a class="btn btn-small" href="{{ url_for('new_league') }}">Create a League</a>
+    </div>
+  {% endif %}
+{% endblock %}
