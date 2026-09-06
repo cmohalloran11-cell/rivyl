@@ -1903,7 +1903,7 @@ def user_profile():
     )
 
 
-NOTIFICATION_ICON = {"trade": "🤝", "waiver": "📝", "lineup": "⚠️", "draft": "🎙️"}
+NOTIFICATION_ICON = {"trade": "🤝", "waiver": "📝", "lineup": "⚠️", "draft": "🎙️", "league": "📢"}
 
 
 @app.route("/notifications")
@@ -2341,6 +2341,184 @@ def advance_week(league_id):
     db.commit()
     flash(f"Advanced to Week {league['current_week'] + 1}.")
     return redirect(url_for("league_home", league_id=league_id))
+
+
+def log_commissioner_action(db, league_id, commish_team_id, detail):
+    """Every commissioner action lands in the same transactions table the
+    Activity feed already reads -- a real audit log instead of a second,
+    parallel history to keep in sync."""
+    log_transaction(db, league_id, commish_team_id, "commish", detail)
+
+
+@app.route("/leagues/<int:league_id>/commissioner")
+def commissioner_center(league_id):
+    db = get_db()
+    league = db.execute("SELECT * FROM leagues WHERE id = ?", (league_id,)).fetchone()
+    if league is None:
+        flash("League not found.")
+        return redirect(url_for("index"))
+    if not is_league_creator(db, league_id):
+        flash("Only the commissioner can access this page.")
+        return redirect(url_for("league_home", league_id=league_id))
+
+    teams = db.execute(
+        "SELECT * FROM teams WHERE league_id = ? ORDER BY slot_index", (league_id,)
+    ).fetchall()
+    roster_config = get_roster_config(league)
+    audit_log = db.execute(
+        """
+        SELECT tx.*, t.team_name FROM transactions tx
+        JOIN teams t ON t.id = tx.team_id
+        WHERE tx.league_id = ? AND tx.kind = 'commish'
+        ORDER BY tx.id DESC LIMIT 50
+        """,
+        (league_id,),
+    ).fetchall()
+
+    return render_template(
+        "commissioner.html",
+        league=league, teams=teams, roster_config=roster_config,
+        position_order=POSITION_ORDER, roster_slot_max=ROSTER_SLOT_MAX, roster_bench_max=ROSTER_BENCH_MAX,
+        audit_log=audit_log, my_team_id=get_my_team_id(league_id, teams),
+    )
+
+
+@app.route("/leagues/<int:league_id>/commissioner/roster-config", methods=["POST"])
+def update_roster_config(league_id):
+    db = get_db()
+    league = db.execute("SELECT * FROM leagues WHERE id = ?", (league_id,)).fetchone()
+    if league is None or not is_league_creator(db, league_id):
+        flash("Only the commissioner can change roster settings.")
+        return redirect(url_for("league_home", league_id=league_id))
+    if league["draft_status"] != "not_started":
+        flash("Roster settings can only change before the draft starts.")
+        return redirect(url_for("commissioner_center", league_id=league_id))
+
+    roster_config = {}
+    try:
+        for pos in POSITION_ORDER + ["FLEX"]:
+            n = int(request.form.get(f"pos_{pos}", 0))
+            roster_config[pos] = max(0, min(ROSTER_SLOT_MAX, n))
+        bench = int(request.form.get("bench", 0))
+        roster_config["BN"] = max(0, min(ROSTER_BENCH_MAX, bench))
+    except ValueError:
+        flash("Roster settings must be numbers.")
+        return redirect(url_for("commissioner_center", league_id=league_id))
+
+    if sum(roster_config[pos] for pos in POSITION_ORDER) + roster_config["FLEX"] < 1:
+        flash("Your lineup needs at least one starting slot.")
+        return redirect(url_for("commissioner_center", league_id=league_id))
+
+    total_rounds = sum(roster_config[pos] for pos in POSITION_ORDER) + roster_config["FLEX"] + roster_config["BN"]
+    db.execute(
+        "UPDATE leagues SET roster_config_json = ?, roster_settings = ?, rounds = ? WHERE id = ?",
+        (json.dumps(roster_config), roster_config_label(roster_config), total_rounds, league_id),
+    )
+    commish_team = db.execute(
+        "SELECT id FROM teams WHERE league_id = ? AND is_commissioner = 1", (league_id,)
+    ).fetchone()
+    log_commissioner_action(db, league_id, commish_team["id"], f"Updated roster settings — {roster_config_label(roster_config)}.")
+    db.commit()
+    flash("Roster settings updated.")
+    return redirect(url_for("commissioner_center", league_id=league_id))
+
+
+@app.route("/leagues/<int:league_id>/commissioner/remove-team/<int:team_id>", methods=["POST"])
+def remove_team(league_id, team_id):
+    db = get_db()
+    league = db.execute("SELECT * FROM leagues WHERE id = ?", (league_id,)).fetchone()
+    if league is None or not is_league_creator(db, league_id):
+        flash("Only the commissioner can remove a team's owner.")
+        return redirect(url_for("league_home", league_id=league_id))
+
+    team = db.execute("SELECT * FROM teams WHERE id = ? AND league_id = ?", (team_id, league_id)).fetchone()
+    if team is None or team["owner_type"] != "human":
+        flash("That's not a human-owned team.")
+        return redirect(url_for("commissioner_center", league_id=league_id))
+    if team["is_commissioner"]:
+        flash("The commissioner's own team can't be removed this way.")
+        return redirect(url_for("commissioner_center", league_id=league_id))
+
+    personality = random.choice(AI_PERSONALITIES)
+    db.execute(
+        "UPDATE teams SET owner_type = 'ai', user_id = NULL, ai_personality = ? WHERE id = ?",
+        (personality, team_id),
+    )
+    commish_team = db.execute(
+        "SELECT id FROM teams WHERE league_id = ? AND is_commissioner = 1", (league_id,)
+    ).fetchone()
+    log_commissioner_action(db, league_id, commish_team["id"],
+                             f"Removed the human owner from {team['team_name']} — AI ({personality}) takes over.")
+    db.commit()
+    flash(f"{team['team_name']} is now AI-controlled.")
+    return redirect(url_for("commissioner_center", league_id=league_id))
+
+
+@app.route("/leagues/<int:league_id>/commissioner/transfer-team/<int:team_id>", methods=["POST"])
+def transfer_team(league_id, team_id):
+    db = get_db()
+    league = db.execute("SELECT * FROM leagues WHERE id = ?", (league_id,)).fetchone()
+    if league is None or not is_league_creator(db, league_id):
+        flash("Only the commissioner can transfer a team.")
+        return redirect(url_for("league_home", league_id=league_id))
+
+    team = db.execute("SELECT * FROM teams WHERE id = ? AND league_id = ?", (team_id, league_id)).fetchone()
+    if team is None:
+        flash("Team not found.")
+        return redirect(url_for("commissioner_center", league_id=league_id))
+
+    username = request.form.get("username", "").strip()
+    new_owner = db.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
+    if new_owner is None:
+        flash(f"No RIVYL account named \"{username}\".")
+        return redirect(url_for("commissioner_center", league_id=league_id))
+
+    already = db.execute(
+        "SELECT 1 FROM teams WHERE league_id = ? AND user_id = ?", (league_id, new_owner["id"])
+    ).fetchone()
+    if already is not None:
+        flash(f"{username} already owns a team in this league.")
+        return redirect(url_for("commissioner_center", league_id=league_id))
+
+    db.execute(
+        "UPDATE teams SET owner_type = 'human', user_id = ?, owner_name = ?, ai_personality = NULL WHERE id = ?",
+        (new_owner["id"], username, team_id),
+    )
+    log_commissioner_action(db, league_id, team_id, f"Transferred {team['team_name']} to {username}.")
+    db.commit()
+    flash(f"{team['team_name']} is now owned by {username}.")
+    return redirect(url_for("commissioner_center", league_id=league_id))
+
+
+@app.route("/leagues/<int:league_id>/commissioner/announce", methods=["POST"])
+def send_announcement(league_id):
+    db = get_db()
+    league = db.execute("SELECT * FROM leagues WHERE id = ?", (league_id,)).fetchone()
+    if league is None or not is_league_creator(db, league_id):
+        flash("Only the commissioner can send a league announcement.")
+        return redirect(url_for("league_home", league_id=league_id))
+
+    body = request.form.get("body", "").strip()
+    if not body:
+        flash("Write something first.")
+        return redirect(url_for("commissioner_center", league_id=league_id))
+
+    commish_team = db.execute(
+        "SELECT id FROM teams WHERE league_id = ? AND is_commissioner = 1", (league_id,)
+    ).fetchone()
+    human_teams = db.execute(
+        "SELECT * FROM teams WHERE league_id = ? AND owner_type = 'human'", (league_id,)
+    ).fetchall()
+    for t in human_teams:
+        create_notification(db, t["user_id"], league_id, "league", "League announcement", body)
+    db.execute(
+        "INSERT INTO messages (league_id, team_id, body) VALUES (?, ?, ?)",
+        (league_id, commish_team["id"], f"📢 Announcement: {body}"),
+    )
+    log_commissioner_action(db, league_id, commish_team["id"], f"Sent a league announcement: \"{body}\"")
+    db.commit()
+    flash("Announcement sent.")
+    return redirect(url_for("commissioner_center", league_id=league_id))
 
 
 @app.route("/leagues/<int:league_id>/team/<int:team_id>")
@@ -3410,7 +3588,7 @@ def player_profile(league_id, player_id):
     )
 
 
-ACTIVITY_KIND_ICON = {"add": "📈", "drop": "📉", "trade": "🔄"}
+ACTIVITY_KIND_ICON = {"add": "📈", "drop": "📉", "trade": "🔄", "commish": "🛠️"}
 
 
 @app.route("/leagues/<int:league_id>/activity")

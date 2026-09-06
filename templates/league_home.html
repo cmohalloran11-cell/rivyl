@@ -236,6 +236,12 @@
   </table>
 
   {% if can_delete %}
+    <h2 class="section-title">Commissioner</h2>
+    <div class="card invite-card">
+      <p class="hint">Manage teams, roster settings, and league-wide announcements.</p>
+      <a class="btn btn-small btn-secondary" href="{{ url_for('commissioner_center', league_id=league['id']) }}">Commissioner Center</a>
+    </div>
+
     <h2 class="section-title">Danger Zone</h2>
     <div class="card invite-card">
       <p class="hint">Deleting a league permanently removes its draft, rosters, and schedule. This can't be undone.</p>

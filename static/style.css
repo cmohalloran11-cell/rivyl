@@ -504,7 +504,7 @@ label {
   font-weight: 600;
 }
 
-input, select {
+input, select, textarea {
   background: var(--bg);
   border: 1px solid var(--border);
   color: var(--text);
@@ -514,8 +514,9 @@ input, select {
   font-family: inherit;
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
-input:hover, select:hover { border-color: var(--border-bright); }
-input:focus, select:focus {
+textarea { resize: vertical; width: 100%; }
+input:hover, select:hover, textarea:hover { border-color: var(--border-bright); }
+input:focus, select:focus, textarea:focus {
   outline: none;
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-soft);

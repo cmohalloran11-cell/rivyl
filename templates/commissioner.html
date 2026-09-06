@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Commissioner &mdash; {{ league['name'] }}{% endblock %}
+{% block league_nav %}{{ macros.league_tabs(league, my_team_id, 'league') }}{% endblock %}
+{% block content %}
+  <h1>Commissioner Center</h1>
+  <p class="subtitle">{{ league['name'] }} &middot; visible only to you</p>
+
+  <h2 class="section-title">League Management</h2>
+  <div class="grade-list">
+    {% for team in teams %}
+      <div class="grade-row">
+        <div style="flex:1;">
+          <div class="cell-flex" style="font-weight:700;">
+            {{ macros.team_logo(team) }}
+            {{ team['team_name'] or 'Open slot' }}
+            {% if team['is_commissioner'] %}<span class="tag-commish">Commissioner</span>{% endif %}
+            {% if team['owner_type'] == 'human' %}<span class="badge badge-human">👤 {{ team['owner_name'] or '' }}</span>
+            {% elif team['status'] == 'filled' %}<span class="badge badge-ai">🤖 {{ team['ai_personality'] }}</span>
+            {% else %}<span class="badge badge-open">Open</span>{% endif %}
+          </div>
+        </div>
+        {% if team['owner_type'] == 'human' and not team['is_commissioner'] %}
+          <form method="post" action="{{ url_for('remove_team', league_id=league['id'], team_id=team['id']) }}"
+                onsubmit="return confirm('Remove the human owner from {{ team['team_name'] }}? An AI manager takes over the existing roster.');">
+            <button class="btn btn-small btn-secondary" type="submit">Remove Owner</button>
+          </form>
+        {% endif %}
+        {% if team['status'] == 'filled' and not team['is_commissioner'] %}
+          <form method="post" action="{{ url_for('transfer_team', league_id=league['id'], team_id=team['id']) }}" class="form-row" style="gap:6px;">
+            <input type="text" name="username" placeholder="Transfer to username" style="width:160px;" required>
+            <button class="btn btn-small btn-secondary" type="submit">Transfer</button>
+          </form>
+        {% endif %}
+      </div>
+    {% endfor %}
+  </div>
+
+  <h2 class="section-title">Roster Settings</h2>
+  {% if league['draft_status'] != 'not_started' %}
+    <p class="empty-state">Roster settings are locked once the draft starts.</p>
+  {% else %}
+    <form class="card form" method="post" action="{{ url_for('update_roster_config', league_id=league['id']) }}">
+      <div class="form-row" style="flex-wrap:wrap; gap:14px;">
+        {% for pos in position_order + ['FLEX'] %}
+          <label style="width:90px;">
+            {{ pos }}
+            <input type="number" name="pos_{{ pos }}" min="0" max="{{ roster_slot_max }}" value="{{ roster_config.get(pos, 0) }}">
+          </label>
+        {% endfor %}
+        <label style="width:90px;">
+          Bench
+          <input type="number" name="bench" min="0" max="{{ roster_bench_max }}" value="{{ roster_config.get('BN', 0) }}">
+        </label>
+      </div>
+      <button class="btn btn-small" type="submit" style="align-self:flex-start;">Save Roster Settings</button>
+    </form>
+  {% endif %}
+
+  <h2 class="section-title">League Announcement</h2>
+  <form class="card form" method="post" action="{{ url_for('send_announcement', league_id=league['id']) }}">
+    <textarea name="body" rows="3" placeholder="Message every human team in the league..." required></textarea>
+    <button class="btn btn-small" type="submit" style="align-self:flex-start;">Send Announcement</button>
+  </form>
+
+  <h2 class="section-title">Audit Log</h2>
+  {% if audit_log %}
+    <div class="activity-feed">
+      {% for entry in audit_log %}
+        <div class="activity-row">
+          <span class="activity-icon">🛠️</span>
+          <span style="flex:1;">{{ entry['detail'] }}</span>
+          <span class="hint" style="margin:0; white-space:nowrap;">{{ entry['created_at'][:16] }}</span>
+        </div>
+      {% endfor %}
+    </div>
+  {% else %}
+    <p class="empty-state">No commissioner actions logged yet.</p>
+  {% endif %}
+{% endblock %}
