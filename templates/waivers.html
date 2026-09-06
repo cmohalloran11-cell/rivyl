@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Waivers &mdash; {{ league['name'] }}{% endblock %}
+{% block league_nav %}{{ macros.league_tabs(league, my_team_id, 'waivers') }}{% endblock %}
+{% block content %}
+  <h1>Waivers</h1>
+  <p class="subtitle">{{ league['name'] }} &middot; free agents &amp; FAAB claims</p>
+
+  {% if league['draft_status'] != 'complete' %}
+    <div class="empty-state">
+      <div class="empty-state-icon">📝</div>
+      <h3>Waivers open once the draft is complete</h3>
+    </div>
+  {% else %}
+    {% if my_team %}
+      <div class="stat-card-row" style="max-width:220px;">
+        <div class="stat-card">
+          <div class="stat-card-value">${{ my_team['faab_balance'] }}</div>
+          <div class="stat-card-label">FAAB Balance</div>
+        </div>
+      </div>
+    {% endif %}
+
+    <div class="pos-tabs">
+      <a class="pos-tab {% if tab == 'available' %}pos-tab-active{% endif %}"
+         href="{{ url_for('waivers_page', league_id=league['id'], tab='available') }}">Free Agents</a>
+      <a class="pos-tab {% if tab == 'claims' %}pos-tab-active{% endif %}"
+         href="{{ url_for('waivers_page', league_id=league['id'], tab='claims') }}">My Claims</a>
+    </div>
+
+    {% if tab == 'available' %}
+      {% if available %}
+        <table class="teams-table">
+          <thead>
+            <tr><th></th><th>Player</th><th>Team</th><th>Opp</th><th class="num">Rank</th><th class="num">Proj</th><th></th></tr>
+          </thead>
+          <tbody>
+            {% for row in available %}
+              <tr>
+                <td>{{ macros.player_face(row) }}</td>
+                <td class="player-name-cell">
+                  <a class="cell-flex" style="color:inherit; text-decoration:none;"
+                     href="{{ url_for('player_profile', league_id=league['id'], player_id=row['player']['id']) }}">
+                    {{ row['player']['full_name'] }}
+                    <span class="badge badge-pos badge-pos-{{ row['player']['position'] }}">{{ row['player']['position'] }}</span>
+                    {% if row['injury_label'] %}<span class="badge badge-injury badge-injury-{{ row['injury_label'] }}">{{ row['injury_label'] }}</span>{% endif %}
+                  </a>
+                </td>
+                <td>{{ row['player']['nfl_team'] or '—' }}</td>
+                <td>{{ row['opponent'] or '—' }}</td>
+                <td class="num">{{ row['player']['rank'] if row['player']['rank'] < 999999 else '—' }}</td>
+                <td class="num proj-cell">{{ '%.1f'|format(row['player']['proj']) if row['player']['proj'] is not none else '—' }}</td>
+                <td>
+                  {% if my_team_id %}
+                    <a class="btn btn-small" href="{{ url_for('waiver_claim_builder', league_id=league['id'], player_id=row['player']['id']) }}">Claim</a>
+                  {% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% else %}
+        <div class="empty-state">
+          <div class="empty-state-icon">🔍</div>
+          <h3>No free agents found</h3>
+        </div>
+      {% endif %}
+    {% else %}
+      {% if not my_team_id %}
+        <p class="empty-state">Join this league to submit waiver claims.</p>
+      {% elif my_claims %}
+        <div class="grade-list">
+          {% for c in my_claims %}
+            <div class="grade-row">
+              <div>
+                {% if c['status'] == 'won' %}<span class="badge badge-win">Won</span>
+                {% elif c['status'] == 'lost' %}<span class="badge badge-loss">Lost</span>
+                {% else %}<span class="badge badge-full">Pending</span>{% endif %}
+              </div>
+              <div style="flex:1;">
+                <div class="cell-flex" style="font-weight:700;">
+                  {{ c['add_player_name'] }}
+                  <span class="hint" style="margin:0;">${{ c['faab_bid'] }} FAAB</span>
+                  {% if c['drop_player_name'] %}<span class="hint" style="margin:0;">&middot; drop {{ c['drop_player_name'] }}</span>{% endif %}
+                </div>
+                {% if c['reason'] %}<p class="hint">{{ c['reason'] }}</p>{% endif %}
+              </div>
+              {% if c['status'] == 'pending' %}
+                <form method="post" action="{{ url_for('cancel_waiver_claim', league_id=league['id'], claim_id=c['id']) }}">
+                  <button class="btn btn-small btn-secondary" type="submit">Cancel</button>
+                </form>
+              {% endif %}
+            </div>
+          {% endfor %}
+        </div>
+      {% else %}
+        <div class="empty-state">
+          <div class="empty-state-icon">📝</div>
+          <h3>No claims yet</h3>
+          <p>Claim a free agent to see it show up here &mdash; wins and losses included.</p>
+          <a class="btn btn-small" href="{{ url_for('waivers_page', league_id=league['id'], tab='available') }}">Browse Free Agents</a>
+        </div>
+      {% endif %}
+    {% endif %}
+  {% endif %}
+{% endblock %}

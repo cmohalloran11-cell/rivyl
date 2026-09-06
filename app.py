@@ -488,7 +488,8 @@ def init_db():
             losses INTEGER NOT NULL DEFAULT 0,
             is_commissioner INTEGER NOT NULL DEFAULT 0,
             logo_icon TEXT,
-            logo_color TEXT
+            logo_color TEXT,
+            faab_balance INTEGER NOT NULL DEFAULT 100
         );
 
         CREATE TABLE IF NOT EXISTS players (
@@ -621,6 +622,21 @@ def init_db():
             body TEXT NOT NULL,
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
+
+        CREATE TABLE IF NOT EXISTS waiver_claims (
+            id SERIAL PRIMARY KEY,
+            league_id INTEGER NOT NULL REFERENCES leagues(id) ON DELETE CASCADE,
+            team_id INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+            add_player_id TEXT NOT NULL,
+            add_player_name TEXT NOT NULL,
+            drop_pick_id INTEGER REFERENCES draft_picks(id) ON DELETE SET NULL,
+            drop_player_name TEXT,
+            faab_bid INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'pending',
+            reason TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            processed_at TEXT
+        );
         """
     )
 
@@ -665,6 +681,7 @@ def init_db():
             "eliminated_week": "ALTER TABLE teams ADD COLUMN eliminated_week INTEGER",
             "queue_json": "ALTER TABLE teams ADD COLUMN queue_json TEXT",
             "user_id": "ALTER TABLE teams ADD COLUMN user_id INTEGER",
+            "faab_balance": "ALTER TABLE teams ADD COLUMN faab_balance INTEGER NOT NULL DEFAULT 100",
         },
         "nfl_games": {
             "stats_synced": "ALTER TABLE nfl_games ADD COLUMN stats_synced INTEGER NOT NULL DEFAULT 0",
@@ -2479,6 +2496,173 @@ def add_free_agent(league_id, team_id, player_id):
     )
 
 
+@app.route("/leagues/<int:league_id>/waivers")
+def waivers_page(league_id):
+    db = get_db()
+    league = db.execute("SELECT * FROM leagues WHERE id = ?", (league_id,)).fetchone()
+    if league is None:
+        flash("League not found.")
+        return redirect(url_for("index"))
+
+    teams = db.execute(
+        "SELECT * FROM teams WHERE league_id = ? ORDER BY slot_index", (league_id,)
+    ).fetchall()
+    my_team_id = get_my_team_id(league_id, teams)
+    my_team = next((t for t in teams if t["id"] == my_team_id), None)
+
+    tab = request.args.get("tab", "available")
+    if tab not in ("available", "claims"):
+        tab = "available"
+
+    available = []
+    my_claims = []
+    if league["draft_status"] == "complete":
+        if tab == "available":
+            roster_config = get_roster_config(league)
+            schedule_map = get_schedule_map(db, league["current_week"])
+            for p in get_available_players(db, league_id, league["scoring"], roster_config)[:100]:
+                game = schedule_map.get(p["nfl_team"])
+                if game:
+                    opponent = ("vs " if game["is_home"] else "@ ") + (game["opponent"] or "")
+                elif p["nfl_team"]:
+                    opponent = "BYE"
+                else:
+                    opponent = None
+                available.append({
+                    "player": p, "opponent": opponent,
+                    "injury_label": INJURY_LABELS.get(p["injury_status"]),
+                    "face_url": player_face_url(p["id"], p["position"], p["nfl_team"]),
+                    "initials": player_initials(p["full_name"]),
+                })
+        elif my_team_id:
+            my_claims = db.execute(
+                "SELECT * FROM waiver_claims WHERE league_id = ? AND team_id = ? ORDER BY created_at DESC",
+                (league_id, my_team_id),
+            ).fetchall()
+
+    return render_template(
+        "waivers.html",
+        league=league, my_team_id=my_team_id, my_team=my_team,
+        tab=tab, available=available, my_claims=my_claims,
+    )
+
+
+@app.route("/leagues/<int:league_id>/waivers/claim/<player_id>")
+def waiver_claim_builder(league_id, player_id):
+    db = get_db()
+    league = db.execute("SELECT * FROM leagues WHERE id = ?", (league_id,)).fetchone()
+    player = db.execute("SELECT * FROM players WHERE id = ?", (player_id,)).fetchone()
+    if league is None or player is None:
+        flash("Not found.")
+        return redirect(url_for("waivers_page", league_id=league_id))
+
+    teams = db.execute(
+        "SELECT * FROM teams WHERE league_id = ? ORDER BY slot_index", (league_id,)
+    ).fetchall()
+    my_team_id = get_my_team_id(league_id, teams)
+    if my_team_id is None:
+        flash("Join this league to submit a waiver claim.")
+        return redirect(url_for("waivers_page", league_id=league_id))
+    my_team = next(t for t in teams if t["id"] == my_team_id)
+
+    owned = db.execute(
+        "SELECT 1 FROM draft_picks WHERE league_id = ? AND player_id = ?", (league_id, player_id)
+    ).fetchone()
+    if owned is not None:
+        flash(f"{player['full_name']} is already rostered.")
+        return redirect(url_for("waivers_page", league_id=league_id))
+
+    already_pending = db.execute(
+        "SELECT 1 FROM waiver_claims WHERE league_id = ? AND team_id = ? AND add_player_id = ? AND status = 'pending'",
+        (league_id, my_team_id, player_id),
+    ).fetchone()
+    if already_pending is not None:
+        flash(f"You already have a pending claim on {player['full_name']}.")
+        return redirect(url_for("waivers_page", league_id=league_id, tab="claims"))
+
+    picks = get_roster_picks(db, league_id, my_team_id)
+    roster_full = len(picks) >= league["rounds"]
+
+    return render_template(
+        "waiver_claim.html", league=league, team=my_team, player=player,
+        picks=picks, roster_full=roster_full, my_team_id=my_team_id,
+    )
+
+
+@app.route("/leagues/<int:league_id>/waivers/claim", methods=["POST"])
+def submit_waiver_claim(league_id):
+    db = get_db()
+    league = db.execute("SELECT * FROM leagues WHERE id = ?", (league_id,)).fetchone()
+    if league is None:
+        flash("League not found.")
+        return redirect(url_for("index"))
+
+    teams = db.execute(
+        "SELECT * FROM teams WHERE league_id = ? ORDER BY slot_index", (league_id,)
+    ).fetchall()
+    my_team_id = get_my_team_id(league_id, teams)
+    if my_team_id is None:
+        flash("Join this league to submit a waiver claim.")
+        return redirect(url_for("waivers_page", league_id=league_id))
+    my_team = next(t for t in teams if t["id"] == my_team_id)
+
+    player_id = request.form.get("player_id")
+    player = db.execute("SELECT * FROM players WHERE id = ?", (player_id,)).fetchone()
+    if player is None:
+        flash("Player not found.")
+        return redirect(url_for("waivers_page", league_id=league_id))
+
+    try:
+        faab_bid = int(request.form.get("faab_bid", 0))
+    except ValueError:
+        faab_bid = 0
+    faab_bid = max(0, faab_bid)
+    if faab_bid > my_team["faab_balance"]:
+        flash(f"You only have ${my_team['faab_balance']} FAAB left.")
+        return redirect(url_for("waiver_claim_builder", league_id=league_id, player_id=player_id))
+
+    drop_pick_id = request.form.get("drop_pick_id", type=int)
+    drop_pick_name = None
+    if drop_pick_id:
+        drop_pick = db.execute(
+            "SELECT * FROM draft_picks WHERE id = ? AND league_id = ? AND team_id = ?",
+            (drop_pick_id, league_id, my_team_id),
+        ).fetchone()
+        if drop_pick is None:
+            flash("That player isn't on this roster.")
+            return redirect(url_for("waiver_claim_builder", league_id=league_id, player_id=player_id))
+        drop_pick_name = drop_pick["player_name"]
+
+    db.execute(
+        """
+        INSERT INTO waiver_claims (league_id, team_id, add_player_id, add_player_name, drop_pick_id, drop_player_name, faab_bid)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (league_id, my_team_id, player_id, player["full_name"], drop_pick_id, drop_pick_name, faab_bid),
+    )
+    db.commit()
+
+    process_waiver_claims_for_player(db, league_id, player_id)
+    flash(f"Claim submitted on {player['full_name']} — processed instantly, check My Claims for the result.")
+    return redirect(url_for("waivers_page", league_id=league_id, tab="claims"))
+
+
+@app.route("/leagues/<int:league_id>/waivers/claim/<int:claim_id>/cancel", methods=["POST"])
+def cancel_waiver_claim(league_id, claim_id):
+    db = get_db()
+    teams = db.execute(
+        "SELECT * FROM teams WHERE league_id = ? ORDER BY slot_index", (league_id,)
+    ).fetchall()
+    my_team_id = get_my_team_id(league_id, teams)
+    cur = db.execute(
+        "DELETE FROM waiver_claims WHERE id = ? AND league_id = ? AND team_id = ? AND status = 'pending'",
+        (claim_id, league_id, my_team_id),
+    )
+    db.commit()
+    flash("Claim cancelled." if cur.rowcount else "That claim can't be cancelled.")
+    return redirect(url_for("waivers_page", league_id=league_id, tab="claims"))
+
+
 @app.route("/leagues/<int:league_id>/trades")
 def trades_page(league_id):
     db = get_db()
@@ -3294,6 +3478,7 @@ def get_available_players(db, league_id, scoring="Standard", roster_config=None)
         live = live_ranks.get(player["id"])
         player["rank"] = live["rank"] if live else 999999
         player["pos_rank"] = live["pos_rank"] if live else player.get("pos_rank")
+        player["proj"] = live["proj"] if live else None
         available.append(player)
     available.sort(key=lambda p: p["rank"])
     return available
@@ -3831,6 +4016,63 @@ def execute_roster_move(db, league, team_row, add_player_id=None, drop_pick_id=N
     log_transaction(db, league_id, team_id, "add", detail)
 
     return True, detail
+
+
+def process_waiver_claims_for_player(db, league_id, player_id):
+    """Settle every pending claim on one free agent right now. This app
+    processes waivers instantly rather than on a weekly schedule -- there's
+    no day-of-week concept anywhere else in it, and pretending there's a
+    real waiver deadline countdown would be exactly the kind of fabricated
+    number this codebase has spent the whole session steering away from.
+    Highest FAAB bid wins; ties break toward whoever claimed first. Every
+    other pending claim on this player gets a real reason, not a silent
+    disappearance."""
+    claims = db.execute(
+        """
+        SELECT * FROM waiver_claims
+        WHERE league_id = ? AND add_player_id = ? AND status = 'pending'
+        ORDER BY faab_bid DESC, created_at ASC
+        """,
+        (league_id, player_id),
+    ).fetchall()
+    if not claims:
+        return
+
+    league = db.execute("SELECT * FROM leagues WHERE id = ?", (league_id,)).fetchone()
+    settled = False
+    for c in claims:
+        if settled:
+            db.execute(
+                "UPDATE waiver_claims SET status = 'lost', reason = ?, processed_at = datetime('now') WHERE id = ?",
+                ("Lost the waiver — a higher (or earlier) claim on this player was processed first.", c["id"]),
+            )
+            continue
+
+        team = db.execute("SELECT * FROM teams WHERE id = ?", (c["team_id"],)).fetchone()
+        if team["faab_balance"] < c["faab_bid"]:
+            db.execute(
+                "UPDATE waiver_claims SET status = 'lost', reason = ?, processed_at = datetime('now') WHERE id = ?",
+                ("Insufficient FAAB balance at processing time.", c["id"]),
+            )
+            continue
+
+        ok, message = execute_roster_move(
+            db, league, team, add_player_id=c["add_player_id"], drop_pick_id=c["drop_pick_id"],
+            note=f"Won waiver claim (${c['faab_bid']} FAAB).",
+        )
+        if ok:
+            db.execute("UPDATE teams SET faab_balance = faab_balance - ? WHERE id = ?", (c["faab_bid"], team["id"]))
+            db.execute(
+                "UPDATE waiver_claims SET status = 'won', reason = ?, processed_at = datetime('now') WHERE id = ?",
+                (message, c["id"]),
+            )
+            settled = True
+        else:
+            db.execute(
+                "UPDATE waiver_claims SET status = 'lost', reason = ?, processed_at = datetime('now') WHERE id = ?",
+                (message, c["id"]),
+            )
+    db.commit()
 
 
 def ensure_ai_teams_optimal(db, league_id):

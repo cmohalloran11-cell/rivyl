@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% import "_macros.html" as macros %}
+{% block title %}Claim {{ player['full_name'] }} &mdash; {{ league['name'] }}{% endblock %}
+{% block league_nav %}{{ macros.league_tabs(league, my_team_id, 'waivers') }}{% endblock %}
+{% block content %}
+  <h1>Claim {{ player['full_name'] }}</h1>
+  <p class="subtitle">
+    <span class="badge badge-pos badge-pos-{{ player['position'] }}">{{ player['position'] }}</span>
+    {{ player['nfl_team'] or 'Free Agent' }} &middot; onto {{ team['team_name'] }}
+  </p>
+
+  <form class="card form" method="post" action="{{ url_for('submit_waiver_claim', league_id=league['id']) }}">
+    <input type="hidden" name="player_id" value="{{ player['id'] }}">
+
+    <label>
+      FAAB bid (you have ${{ team['faab_balance'] }})
+      <input type="number" name="faab_bid" min="0" max="{{ team['faab_balance'] }}" value="0" required>
+    </label>
+
+    <div class="invite-label">
+      {% if roster_full %}Your roster is full &mdash; choose who to drop{% else %}Drop a player, or add straight to your bench{% endif %}
+    </div>
+    <div class="form" style="gap:8px;">
+      {% if not roster_full %}
+        <label class="randomize-order-check">
+          <input type="radio" name="drop_pick_id" value="" checked>
+          Don't drop anyone &mdash; I have bench room
+        </label>
+      {% endif %}
+      {% for p in picks %}
+        <label class="randomize-order-check">
+          <input type="radio" name="drop_pick_id" value="{{ p['id'] }}" {% if roster_full and loop.first %}checked{% endif %}>
+          Drop {{ p['player_name'] }}
+          <span class="badge badge-pos badge-pos-{{ p['position'] }}">{{ p['position'] }}</span>
+        </label>
+      {% endfor %}
+    </div>
+
+    <p class="hint">Claims are processed instantly, not on a weekly schedule &mdash; you'll see the result right away under My Claims.</p>
+    <button class="btn btn-small" type="submit" style="align-self:flex-start;">Submit Claim</button>
+  </form>
+
+  <a class="link-back" href="{{ url_for('waivers_page', league_id=league['id']) }}">&larr; Back to Waivers</a>
+{% endblock %}
