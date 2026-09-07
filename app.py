@@ -511,7 +511,8 @@ def init_db():
             rank_half INTEGER NOT NULL DEFAULT 999999,
             rank_std INTEGER NOT NULL DEFAULT 999999,
             pos_rank TEXT,
-            tier INTEGER
+            tier INTEGER,
+            notes TEXT
         );
 
         CREATE TABLE IF NOT EXISTS market_projections (
@@ -683,6 +684,7 @@ def init_db():
             "pos_rank": "ALTER TABLE players ADD COLUMN pos_rank TEXT",
             "tier": "ALTER TABLE players ADD COLUMN tier INTEGER",
             "depth_chart_order": "ALTER TABLE players ADD COLUMN depth_chart_order INTEGER",
+            "notes": "ALTER TABLE players ADD COLUMN notes TEXT",
         },
         "draft_picks": {
             "player_rank": "ALTER TABLE draft_picks ADD COLUMN player_rank INTEGER",
@@ -814,7 +816,7 @@ def sync_players(db, force=False):
             player_id, name, pos, team,
             r["rank_half"], years_exp, injury_status,
             r["rank_ppr"], r["rank_half"], r["rank_std"],
-            r.get("pos_rank"), r.get("tier"), depth_chart_order,
+            r.get("pos_rank"), r.get("tier"), depth_chart_order, r.get("notes"),
         ))
 
     # Below the top-500 consensus board, fall back to Sleeper's full player
@@ -839,28 +841,34 @@ def sync_players(db, force=False):
             pid, full_name, pos, p.get("team"),
             999999, years_exp if isinstance(years_exp, int) else 0, p.get("injury_status") or None,
             999999, 999999, 999999, None, None,
-            depth_chart_order if isinstance(depth_chart_order, int) else None,
+            depth_chart_order if isinstance(depth_chart_order, int) else None, None,
         ))
         used_sleeper_ids.add(pid)
 
     if not rows:
         return count > 0
 
-    if force:
-        db.execute("DELETE FROM players")
+    # Upsert only -- never delete. Once any league has drafted a player,
+    # draft_picks.player_id references players.id with no cascade, so a
+    # blanket DELETE here throws a foreign-key violation the moment a real
+    # draft exists (caught live: it does, on both this test DB and
+    # production). A player who drops out of the new board still gets
+    # correctly downgraded to rank 999999 via the Sleeper-fallback loop
+    # above, as long as they're still a real active player -- upserting
+    # loses nothing force=True's old delete-first approach actually needed.
     db.executemany(
         """
         INSERT INTO players
             (id, full_name, position, nfl_team, search_rank, years_exp, injury_status,
-             rank_ppr, rank_half, rank_std, pos_rank, tier, depth_chart_order)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             rank_ppr, rank_half, rank_std, pos_rank, tier, depth_chart_order, notes)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (id) DO UPDATE SET
             full_name = EXCLUDED.full_name, position = EXCLUDED.position,
             nfl_team = EXCLUDED.nfl_team, search_rank = EXCLUDED.search_rank,
             years_exp = EXCLUDED.years_exp, injury_status = EXCLUDED.injury_status,
             rank_ppr = EXCLUDED.rank_ppr, rank_half = EXCLUDED.rank_half,
             rank_std = EXCLUDED.rank_std, pos_rank = EXCLUDED.pos_rank, tier = EXCLUDED.tier,
-            depth_chart_order = EXCLUDED.depth_chart_order
+            depth_chart_order = EXCLUDED.depth_chart_order, notes = EXCLUDED.notes
         """,
         rows,
     )
@@ -3738,6 +3746,11 @@ def player_profile(league_id, player_id):
         recent_avg, season_avg, live["proj"] if live else None, proj_source,
         INJURY_LABELS.get(player["injury_status"]), opponent,
     )
+    if player["notes"]:
+        # A real analyst note from the preseason board takes priority over
+        # the generic derived lines -- it's the most specific thing on the
+        # page, not a fabricated scouting blurb.
+        outlook.insert(0, player["notes"])
 
     return render_template(
         "player_profile.html",
