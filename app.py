@@ -3857,6 +3857,53 @@ def league_messages(league_id):
     )
 
 
+@app.route("/leagues/<int:league_id>/draft/chat")
+def draft_chat_json(league_id):
+    """Same messages table League Chat already uses -- a JSON view of the
+    last 50 so the draft room can poll it alongside draft state without a
+    full page load, not a second chat system."""
+    db = get_db()
+    teams = db.execute(
+        "SELECT * FROM teams WHERE league_id = ? ORDER BY slot_index", (league_id,)
+    ).fetchall()
+    teams_by_id = {t["id"]: t for t in teams}
+    rows = db.execute(
+        "SELECT * FROM messages WHERE league_id = ? ORDER BY id DESC LIMIT 50", (league_id,)
+    ).fetchall()
+    return jsonify({
+        "my_team_id": get_my_team_id(league_id, teams),
+        "messages": [
+            {
+                "id": m["id"], "body": m["body"], "created_at": m["created_at"],
+                "team_name": (teams_by_id.get(m["team_id"]) or {}).get("team_name", "Unknown"),
+                "logo_icon": (teams_by_id.get(m["team_id"]) or {}).get("logo_icon"),
+                "logo_color": (teams_by_id.get(m["team_id"]) or {}).get("logo_color"),
+            }
+            for m in reversed(rows)
+        ],
+    })
+
+
+@app.route("/leagues/<int:league_id>/draft/chat", methods=["POST"])
+def draft_chat_post(league_id):
+    db = get_db()
+    teams = db.execute(
+        "SELECT * FROM teams WHERE league_id = ? ORDER BY slot_index", (league_id,)
+    ).fetchall()
+    my_team_id = get_my_team_id(league_id, teams)
+    if my_team_id is None:
+        return jsonify({"error": "not_your_turn"}), 403
+    body = (request.get_json(silent=True) or {}).get("body", "").strip()[:1000]
+    if not body:
+        return jsonify({"error": "empty"}), 400
+    db.execute(
+        "INSERT INTO messages (league_id, team_id, body) VALUES (?, ?, ?)",
+        (league_id, my_team_id, body),
+    )
+    db.commit()
+    return jsonify({"ok": True})
+
+
 @app.route("/leagues/<int:league_id>/fill-ai", methods=["POST"])
 def fill_remaining_with_ai(league_id):
     db = get_db()
@@ -5573,7 +5620,7 @@ def build_state(league_id):
             {
                 "id": p["id"], "full_name": p["full_name"], "position": p["position"],
                 "nfl_team": p["nfl_team"], "search_rank": p["rank"],
-                "years_exp": p["years_exp"],
+                "years_exp": p["years_exp"], "proj": p["proj"],
             }
             for p in get_available_players(db, league_id, league["scoring"], roster_config)[:200]
         ]

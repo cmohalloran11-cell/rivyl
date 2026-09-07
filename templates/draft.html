@@ -30,6 +30,7 @@
           <button type="button" class="draft-subtab draft-subtab-active" data-subtab="players">Players</button>
           <button type="button" class="draft-subtab" data-subtab="queue">Queue <span id="queue-count" class="draft-subtab-count"></span></button>
           <button type="button" class="draft-subtab" data-subtab="lineup">Lineup</button>
+          <button type="button" class="draft-subtab" data-subtab="chat">Chat</button>
         </div>
 
         <div id="players-panel">
@@ -48,7 +49,7 @@
           <div class="player-table-wrap">
             <table class="teams-table">
               <thead>
-                <tr><th></th><th>Player</th><th>Pos</th><th>Team</th><th>Rank</th><th></th></tr>
+                <tr><th></th><th>Player</th><th>Pos</th><th>Team</th><th>Rank</th><th class="num">Proj</th><th></th></tr>
               </thead>
               <tbody id="players-body"></tbody>
             </table>
@@ -60,7 +61,7 @@
           <div class="player-table-wrap">
             <table class="teams-table">
               <thead>
-                <tr><th></th><th>Player</th><th>Pos</th><th>Team</th><th>Rank</th><th></th></tr>
+                <tr><th></th><th>Player</th><th>Pos</th><th>Team</th><th>Rank</th><th class="num">Proj</th><th></th></tr>
               </thead>
               <tbody id="queue-body"></tbody>
             </table>
@@ -75,6 +76,14 @@
             </thead>
             <tbody id="lineup-body"></tbody>
           </table>
+        </div>
+
+        <div id="chat-panel" class="hidden">
+          <div id="draft-chat-feed" class="draft-chat-feed"></div>
+          <form id="draft-chat-form" class="form-row" style="gap:8px; margin-top:10px;">
+            <input type="text" id="draft-chat-input" placeholder="Talk trash while you draft..." maxlength="1000" style="flex:1;">
+            <button class="btn btn-small" type="submit">Send</button>
+          </form>
         </div>
       </div>
     </section>

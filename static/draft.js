@@ -31,6 +31,10 @@
     queueBody: document.getElementById('queue-body'),
     queueCount: document.getElementById('queue-count'),
     lineupBody: document.getElementById('lineup-body'),
+    chatPanel: document.getElementById('chat-panel'),
+    chatFeed: document.getElementById('draft-chat-feed'),
+    chatForm: document.getElementById('draft-chat-form'),
+    chatInput: document.getElementById('draft-chat-input'),
   };
 
   // ---- draft queue (client-side only -- personal to this browser) --------
@@ -293,9 +297,10 @@
         <td><span class="badge badge-pos badge-pos-${p.position}">${p.position}</span></td>
         <td>${p.nfl_team || '—'}</td>
         <td>${p.search_rank < 999999 ? p.search_rank : '—'}</td>
+        <td class="num proj-cell">${p.proj != null ? p.proj.toFixed(1) : '—'}</td>
         <td>${canDraftPosition(p.position) ? `<button class="btn btn-small draft-btn" data-player="${p.id}">Draft</button>` : ''}</td>
       </tr>
-    `).join('') || `<tr><td colspan="6" class="row-open">No players match.</td></tr>`;
+    `).join('') || `<tr><td colspan="7" class="row-open">No players match.</td></tr>`;
 
     el.playersBody.querySelectorAll('.draft-btn').forEach((btn) => {
       btn.addEventListener('click', () => draftPlayer(btn.dataset.player));
@@ -332,12 +337,13 @@
           <td><span class="badge badge-pos badge-pos-${p.position}">${p.position}</span></td>
           <td>${p.nfl_team || '—'}</td>
           <td>${p.search_rank < 999999 ? p.search_rank : '—'}</td>
+          <td class="num proj-cell">${p.proj != null ? p.proj.toFixed(1) : '—'}</td>
           <td>
             ${canDraftPosition(p.position) ? `<button class="btn btn-small draft-btn" data-player="${p.id}">Draft</button>` : ''}
             <button type="button" class="queue-star queued" data-player="${p.id}" title="Remove from queue">★</button>
           </td>
         </tr>`;
-    }).join('') || `<tr><td colspan="6" class="row-open">No players queued yet &mdash; star players on the Players tab.</td></tr>`;
+    }).join('') || `<tr><td colspan="7" class="row-open">No players queued yet &mdash; star players on the Players tab.</td></tr>`;
 
     el.queueBody.querySelectorAll('.draft-btn').forEach((btn) => {
       btn.addEventListener('click', () => draftPlayer(btn.dataset.player));
@@ -548,9 +554,63 @@
     tick();
   }
 
+  // ---- draft chat --------------------------------------------------------
+  // Same messages table League Chat already writes to -- polled on its own
+  // slower interval (chat doesn't need the ~1s pace draft state does) so it
+  // works before/after the draft too, not just mid-pick.
+
+  const chatUrl = `/leagues/${state.league.id}/draft/chat`;
+  let lastChatId = 0;
+
+  function renderChatMessages(messages) {
+    const wasAtBottom = el.chatFeed.scrollTop + el.chatFeed.clientHeight >= el.chatFeed.scrollHeight - 40;
+    el.chatFeed.innerHTML = messages.map((m) => `
+      <div class="draft-chat-row">
+        <span class="team-logo team-logo-sm" style="background:${(m.logo_color || '#8993a4')}22; border-color:${(m.logo_color || '#8993a4')}66; color:${m.logo_color || '#8993a4'};">${m.logo_icon || '🏈'}</span>
+        <div>
+          <div class="cell-flex" style="gap:6px;">
+            <strong>${m.team_name}</strong>
+            <span class="hint" style="margin:0;">${(m.created_at || '').slice(11, 16)}</span>
+          </div>
+          <div class="message-body" style="margin:2px 0 0;">${m.body}</div>
+        </div>
+      </div>
+    `).join('') || `<p class="empty-state">No chat yet &mdash; say something.</p>`;
+    if (wasAtBottom || !lastChatId) el.chatFeed.scrollTop = el.chatFeed.scrollHeight;
+  }
+
+  async function pollChat() {
+    try {
+      const data = await fetchJSON(chatUrl);
+      if (!data || !data.messages) return;
+      const newest = data.messages.length ? data.messages[data.messages.length - 1].id : 0;
+      if (newest !== lastChatId) {
+        lastChatId = newest;
+        renderChatMessages(data.messages);
+      }
+    } catch (e) { /* transient network blip -- next poll retries */ }
+  }
+
+  if (el.chatForm) {
+    el.chatForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const body = el.chatInput.value.trim();
+      if (!body) return;
+      el.chatInput.value = '';
+      await fetch(chatUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ body }),
+      });
+      pollChat();
+    });
+    pollChat();
+    setInterval(pollChat, 3000);
+  }
+
   // ---- subtabs ----------------------------------------------------------
 
-  const SUBTAB_PANELS = { players: el.playersPanel, queue: el.queuePanel, lineup: el.lineupPanel };
+  const SUBTAB_PANELS = { players: el.playersPanel, queue: el.queuePanel, lineup: el.lineupPanel, chat: el.chatPanel };
 
   el.subtabs.addEventListener('click', (e) => {
     const btn = e.target.closest('.draft-subtab');
