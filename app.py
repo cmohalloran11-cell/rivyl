@@ -5654,24 +5654,51 @@ def get_week_status(db, week):
 
 def set_optimal_lineup(db, league_id, team_id):
     """(Re)assigns the best possible starting lineup from a team's current
-    roster, best-rank-first per required slot then FLEX from what's left --
-    always recomputes, unlike ensure_lineup_slots. Used by the AI
-    auto-optimizer and the human 'Generate Best Lineup' button."""
+    roster -- highest CURRENT-WEEK projection first per required slot, then
+    FLEX from what's left. Always recomputes, unlike ensure_lineup_slots.
+    Used by the AI auto-optimizer and the human 'Generate Best Lineup'
+    button.
+
+    Sorts by this week's real projection (with_projections -- the same
+    market-first/model-fallback number shown on the roster and matchup
+    pages), not the player_rank column on draft_picks. That column is a
+    snapshot written once, at draft or waiver-add time, and never updated --
+    "best lineup" reported live as picking stale/wrong players, and this is
+    why: a since-injured former stud's old rank still looked great, a
+    since-emerged waiver pickup's old replacement-level rank still looked
+    replacement-level, and a bye-week player's rank didn't know they had a
+    bye at all (fixed alongside this in with_projections, which now zeroes
+    a bye player's projection instead of still crediting them their normal
+    model estimate for a game they're not playing).
+    """
     league = db.execute("SELECT * FROM leagues WHERE id = ?", (league_id,)).fetchone()
     roster_config = get_roster_config(league)
 
     picks = db.execute(
         """
-        SELECT * FROM draft_picks
-        WHERE league_id = ? AND team_id = ? AND player_id IS NOT NULL
-        ORDER BY (player_rank IS NULL), player_rank ASC, overall_pick ASC
+        SELECT dp.*, p.injury_status, p.years_exp, p.depth_chart_order
+        FROM draft_picks dp
+        LEFT JOIN players p ON p.id = dp.player_id
+        WHERE dp.league_id = ? AND dp.team_id = ? AND dp.player_id IS NOT NULL
         """,
         (league_id, team_id),
     ).fetchall()
     if not picks:
         return
 
-    remaining = list(picks)
+    sync_market_projections(db)
+    schedule_map = get_schedule_map(db, league["current_week"])
+    market_map = get_market_projection_map(db)
+    projected = with_projections(picks, league["scoring"], schedule_map, market_map)
+    # Highest projection first; unprojectable players (no proj at all) sort
+    # last instead of crashing the comparison, and ties fall back to
+    # draft/add-time rank so the result is still deterministic.
+    projected.sort(key=lambda p: (
+        p["proj"] is None, -(p["proj"] or 0.0),
+        p["player_rank"] if p["player_rank"] is not None else 999999,
+    ))
+
+    remaining = projected
     assignments = []
 
     for pos, count in roster_starter_requirements(roster_config).items():
@@ -5793,8 +5820,34 @@ def with_projections(rows, scoring, schedule_map=None, market_map=None):
     for p in rows:
         row = dict(p)
         has_player = bool(row.get("player_id"))
+
+        is_bye = False
+        if has_player:
+            game = schedule_map.get(row.get("nfl_team"))
+            if game:
+                row["opponent"] = ("vs " if game["is_home"] else "@ ") + (game["opponent"] or "")
+            elif row.get("nfl_team"):
+                row["opponent"] = "BYE"
+                is_bye = True
+            else:
+                row["opponent"] = None
+            row["face_url"] = player_face_url(row.get("player_id"), row.get("position"), row.get("nfl_team"))
+            row["initials"] = player_initials(row.get("player_name"))
+        else:
+            row["opponent"] = None
+            row["face_url"] = None
+            row["initials"] = None
+
         market_o = market_map.get(row.get("player_id")) if has_player else None
-        if market_o is not None:
+        if is_bye:
+            # A real bye week means zero real-world snaps -- crediting the
+            # usual market/model estimate anyway (the old behavior) could get
+            # a bye player recommended for a starting slot over a bench
+            # player who's actually playing, which is exactly backwards for
+            # "who should I start this week."
+            row["proj"] = 0.0
+            row["proj_source"] = None
+        elif market_o is not None:
             row["proj"] = compute_offense_points(market_o, scoring)
             row["proj_source"] = "market"
         elif has_player:
@@ -5804,20 +5857,6 @@ def with_projections(rows, scoring, schedule_map=None, market_map=None):
             row["proj"] = None
             row["proj_source"] = None
         row["injury_label"] = INJURY_LABELS.get(row.get("injury_status"))
-        if has_player:
-            game = schedule_map.get(row.get("nfl_team"))
-            if game:
-                row["opponent"] = ("vs " if game["is_home"] else "@ ") + (game["opponent"] or "")
-            elif row.get("nfl_team"):
-                row["opponent"] = "BYE"
-            else:
-                row["opponent"] = None
-            row["face_url"] = player_face_url(row.get("player_id"), row.get("position"), row.get("nfl_team"))
-            row["initials"] = player_initials(row.get("player_name"))
-        else:
-            row["opponent"] = None
-            row["face_url"] = None
-            row["initials"] = None
         out.append(row)
     return out
 
