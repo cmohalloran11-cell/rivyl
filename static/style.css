@@ -326,6 +326,54 @@ button, .btn, .btn-small, input, select {
      shorthand overflow:hidden (to clip rounded corners), which would
      otherwise win on source order alone and silently defeat this. */
   .teams-table { display: block; overflow-x: auto !important; -webkit-overflow-scrolling: touch; max-width: 100%; }
+
+  /* The draft board's player list is the one table people reported not
+     being able to use on a phone: reaching the Draft button meant scrolling
+     sideways past name/pos/team/rank first, and by the time you got there
+     you'd lost track of which row you were even looking at. Every other
+     .teams-table treats mobile as "scroll to see the rest" because reaching
+     the extra columns isn't the point of those pages -- here it's the whole
+     point, so this reflows each row into a 2-line card instead: name on its
+     own line, position/team/rank/proj together on the line below, and the
+     Draft button pinned to the right across both lines so it's visible the
+     instant a row is, with no scrolling at all. */
+  .draft-players-table { overflow-x: visible !important; }
+  .draft-players-table thead { display: none; }
+  .draft-players-table, .draft-players-table tbody { display: block; width: 100%; }
+  .draft-players-table tr {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) auto auto;
+    grid-template-rows: auto auto;
+    align-items: center;
+    column-gap: 8px;
+    row-gap: 3px;
+    padding: 10px 4px;
+  }
+  .draft-players-table td {
+    display: block;
+    border-bottom: none !important;
+    padding: 0 !important;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .draft-players-table td:nth-child(1) { grid-row: 1 / 3; grid-column: 1; }
+  .draft-players-table td:nth-child(2) {
+    grid-row: 1; grid-column: 2 / 5;
+    font-weight: 700;
+  }
+  .draft-players-table td:nth-child(3) { grid-row: 1; grid-column: 5; }
+  .draft-players-table td:nth-child(4),
+  .draft-players-table td:nth-child(5),
+  .draft-players-table td:nth-child(6) {
+    grid-row: 2;
+    font-size: 0.78rem;
+    color: var(--text-faint);
+  }
+  .draft-players-table td:nth-child(4) { grid-column: 2; }
+  .draft-players-table td:nth-child(5) { grid-column: 3; }
+  .draft-players-table td:nth-child(6) { grid-column: 4; }
+  .draft-players-table td:nth-child(7) { grid-row: 1 / 3; grid-column: 6; }
 }
 
 /* ---- Page shell ---- */

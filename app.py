@@ -479,7 +479,7 @@ def init_db():
             rounds INTEGER NOT NULL DEFAULT 0,
             ai_speed TEXT NOT NULL DEFAULT 'fast',
             human_timer_seconds INTEGER NOT NULL DEFAULT 90,
-            pick_deadline REAL,
+            pick_deadline DOUBLE PRECISION,
             grades_json TEXT
         );
 
@@ -683,12 +683,12 @@ def init_db():
             "rounds": "ALTER TABLE leagues ADD COLUMN rounds INTEGER NOT NULL DEFAULT 0",
             "ai_speed": "ALTER TABLE leagues ADD COLUMN ai_speed TEXT NOT NULL DEFAULT 'fast'",
             "human_timer_seconds": "ALTER TABLE leagues ADD COLUMN human_timer_seconds INTEGER NOT NULL DEFAULT 90",
-            "pick_deadline": "ALTER TABLE leagues ADD COLUMN pick_deadline REAL",
+            "pick_deadline": "ALTER TABLE leagues ADD COLUMN pick_deadline DOUBLE PRECISION",
             "grades_json": "ALTER TABLE leagues ADD COLUMN grades_json TEXT",
             "current_week": "ALTER TABLE leagues ADD COLUMN current_week INTEGER NOT NULL DEFAULT 1",
-            "ai_moves_at": "ALTER TABLE leagues ADD COLUMN ai_moves_at REAL",
-            "ai_trade_offers_at": "ALTER TABLE leagues ADD COLUMN ai_trade_offers_at REAL",
-            "ai_ready_at": "ALTER TABLE leagues ADD COLUMN ai_ready_at REAL",
+            "ai_moves_at": "ALTER TABLE leagues ADD COLUMN ai_moves_at DOUBLE PRECISION",
+            "ai_trade_offers_at": "ALTER TABLE leagues ADD COLUMN ai_trade_offers_at DOUBLE PRECISION",
+            "ai_ready_at": "ALTER TABLE leagues ADD COLUMN ai_ready_at DOUBLE PRECISION",
             "league_format": "ALTER TABLE leagues ADD COLUMN league_format TEXT NOT NULL DEFAULT 'Redraft'",
             "roster_config_json": "ALTER TABLE leagues ADD COLUMN roster_config_json TEXT",
         },
@@ -741,6 +741,32 @@ def init_db():
         for column, ddl in columns.items():
             if column not in existing_columns:
                 db.execute(ddl)
+
+    # pick_deadline/ai_ready_at/ai_moves_at/ai_trade_offers_at all store a
+    # time.time() Unix timestamp -- but were declared REAL (Postgres single-
+    # precision float4, ~7 significant decimal digits). A ~1.79-billion-
+    # second timestamp already uses all 7 of those digits before the
+    # fractional part even starts, so every value written was silently
+    # rounded to the nearest ~64-128 seconds on readback. Confirmed live
+    # (2026-09-07): writing "5 seconds from now" and reading it back came
+    # back 90 seconds off. That's invisible to a 6-hour AI-moves throttle,
+    # but it's the whole story on a 3-8s AI-pick pace or a 30-120s human
+    # pick timer -- exactly the "AI doesn't pick in its time range" /
+    # "the timer doesn't work" bug reported live. The columns above were
+    # only just fixed to DOUBLE PRECISION (float8, ~15-17 significant
+    # digits -- plenty for a sub-millisecond-accurate timestamp) for BRAND
+    # NEW installs; a database that already has these columns as REAL needs
+    # its existing columns actually widened, which the ADD-COLUMN-if-
+    # missing loop above can't do since the columns already exist.
+    real_time_columns = ["pick_deadline", "ai_ready_at", "ai_moves_at", "ai_trade_offers_at"]
+    existing_types = {
+        row["column_name"]: row["data_type"] for row in db.execute(
+            "SELECT column_name, data_type FROM information_schema.columns WHERE table_name = 'leagues'"
+        ).fetchall()
+    }
+    for column in real_time_columns:
+        if existing_types.get(column) == "real":
+            db.execute(f"ALTER TABLE leagues ALTER COLUMN {column} TYPE DOUBLE PRECISION")
 
     db.commit()
     db.close()
