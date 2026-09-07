@@ -42,11 +42,11 @@
   <div class="stat-card-row">
     <div class="stat-card">
       <div class="stat-card-value">{{ '%.1f'|format(proj) if proj is not none else '—' }}</div>
-      <div class="stat-card-label">Projection{% if proj_source == 'market' %} &middot; market{% elif proj_source == 'model' %} &middot; model{% endif %}</div>
+      <div class="stat-card-label">Season Proj{% if proj_source == 'market' %} &middot; market{% elif proj_source == 'model' %} &middot; model{% endif %}</div>
     </div>
     <div class="stat-card">
       <div class="stat-card-value">{{ season_total if games_played else '—' }}</div>
-      <div class="stat-card-label">Season Points</div>
+      <div class="stat-card-label">Season Points (actual)</div>
     </div>
     <div class="stat-card">
       <div class="stat-card-value">{{ season_avg if season_avg is not none else '—' }}</div>

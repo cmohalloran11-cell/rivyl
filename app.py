@@ -6,6 +6,7 @@ import random
 import re
 import string
 import time
+from collections import defaultdict
 from pathlib import Path
 
 import psycopg2
@@ -516,6 +517,22 @@ def init_db():
         );
 
         CREATE TABLE IF NOT EXISTS market_projections (
+            player_id TEXT PRIMARY KEY REFERENCES players(id) ON DELETE CASCADE,
+            pass_yards REAL NOT NULL DEFAULT 0,
+            pass_td REAL NOT NULL DEFAULT 0,
+            interceptions REAL NOT NULL DEFAULT 0,
+            rush_yards REAL NOT NULL DEFAULT 0,
+            rush_td REAL NOT NULL DEFAULT 0,
+            rec REAL NOT NULL DEFAULT 0,
+            rec_yards REAL NOT NULL DEFAULT 0,
+            rec_td REAL NOT NULL DEFAULT 0,
+            fg_made REAL NOT NULL DEFAULT 0,
+            fumbles_lost REAL NOT NULL DEFAULT 0,
+            xp_made REAL NOT NULL DEFAULT 0,
+            updated_at REAL NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS season_projections (
             player_id TEXT PRIMARY KEY REFERENCES players(id) ON DELETE CASCADE,
             pass_yards REAL NOT NULL DEFAULT 0,
             pass_td REAL NOT NULL DEFAULT 0,
@@ -1200,24 +1217,61 @@ def _market_get(session, url, params=None, retries=3):
     return r
 
 
-def _ud_option_is_boosted(opt):
-    # payout_multiplier comes back as a string (e.g. "1.0"), not a float.
-    mult = opt.get("payout_multiplier")
-    if mult is None:
-        return False
-    try:
-        return abs(float(mult) - 1.0) > 1e-9
-    except (TypeError, ValueError):
-        return False
+def _pp_fair_line(entries):
+    """Resolve one (player, raw stat_type) group of PrizePicks lines -- each
+    tagged standard/goblin/demon -- down to a single best real-value estimate.
+
+    Confirmed live (2026-09-07) that "standard" coverage is wildly uneven by
+    stat_type: Pass Yards/Rush Yards/Receiving Yards are ~always standard, but
+    "Player Touchdowns" (the combo TD line most RBs/WRs/TEs actually get
+    priced under) has a standard line only ~3% of the time, and Receptions
+    only ~52% of the time -- Pass TDs and FG Made are similarly thin. Dropping
+    every non-standard line (the old behavior) silently zeroed out touchdown
+    and reception credit for most skill players while barely touching QBs
+    (whose scoring leans on the well-covered yardage lines), which is exactly
+    the "QBs look right, RBs/WRs/TEs are underrated" bias reported live.
+
+    goblin/demon are still real markets, just deliberately skewed (goblin:
+    deflated, easier to clear; demon: inflated, harder) -- so when the real
+    fair line is missing, their average brackets it from both sides, which is
+    a real market-derived estimate, not an invented number:
+      - standard line(s) present -> average them (unchanged common case).
+      - both goblin and demon present -> average of each side's average --
+        splits the difference between "too easy" and "too hard".
+      - goblin only -> average the goblin line(s); a real but likely
+        slightly-low estimate (goblin is deflated).
+      - demon only -> the single lowest demon line; the least-inflated real
+        number actually on offer.
+      - nothing usable -> None (caller drops the group, same as before).
+    """
+    by_odds = defaultdict(list)
+    for line, odds in entries:
+        by_odds[odds or "standard"].append(line)
+    if by_odds.get("standard"):
+        return sum(by_odds["standard"]) / len(by_odds["standard"])
+    goblin, demon = by_odds.get("goblin"), by_odds.get("demon")
+    if goblin and demon:
+        return (sum(goblin) / len(goblin) + sum(demon) / len(demon)) / 2
+    if goblin:
+        return sum(goblin) / len(goblin)
+    if demon:
+        return min(demon)
+    return None
 
 
-def fetch_prizepicks_nfl_props():
+def fetch_prizepicks_nfl_props(league_filter="NFL"):
     """One request returns every projection PrizePicks has, across every
     sport, in a single JSON:API payload -- so pull once and filter locally
     rather than risk a 429 with per-league requests. Returns a list of
     {player, position, field, line} dicts, field already mapped via
     _PP_STAT_FIELD_MAP (never raises; [] on any failure, since this is a
-    best-effort enrichment, not a hard dependency)."""
+    best-effort enrichment, not a hard dependency).
+
+    league_filter picks which of PrizePicks' own leagues to read: "NFL" (the
+    default) is the weekly full-game slate; "NFLSZN" is their season-long
+    futures board -- same stat types, same fair-line resolution, just priced
+    over the full season instead of one game. NFL1H/NFL1Q (partial-game
+    props, a fraction of a full game) are never included either way."""
     try:
         session = _market_session()
         resp = _market_get(session, PRIZEPICKS_PARTNER_URL, params={"per_page": 5000})
@@ -1230,46 +1284,75 @@ def fetch_prizepicks_nfl_props():
             ref = ((rel.get(name) or {}).get("data")) or {}
             return included.get((ref.get("type"), ref.get("id")), {}) or {}
 
-        rows = []
+        # Pass 1: group every line by (player, position, raw stat_type) so
+        # standard/goblin/demon variants of the SAME market sit together --
+        # resolved to one fair value per group in pass 2, before it ever
+        # reaches the field-level (rush_td, rec, ...) averaging below.
+        groups = defaultdict(list)
+        group_meta = {}
         for proj in payload.get("data", []):
             try:
                 attr = proj.get("attributes", {}) or {}
                 rel = proj.get("relationships", {}) or {}
                 league_name = (resolve(rel, "league").get("attributes", {}) or {}).get("name") or ""
-                # Excludes NFLSZN (season-long futures) and NFL1H/NFL1Q (partial-game
-                # props, whose lines are a fraction of a full game) -- only the
-                # full-game slate maps cleanly onto a weekly fantasy projection.
-                if league_name.strip().upper() != "NFL":
+                if league_name.strip().upper() != league_filter:
                     continue
-                # "demon"/"goblin" are PrizePicks' own deliberately-skewed alternate
-                # lines (demon: inflated, harder to clear; goblin: deflated, easier)
-                # -- not a market estimate of the true expected stat. For a lot of
-                # players the ONLY line posted is one of these, and treating it as
-                # the expected value was quietly inflating projections (demon lines
-                # outnumber goblin ~2:1 in practice, skewing the average up). Keep
-                # only the real fair-value line.
-                if (attr.get("odds_type") or "standard") != "standard":
-                    continue
-                player_attr = resolve(rel, "new_player").get("attributes", {}) or {}
-                field = _pp_resolve_field(attr.get("stat_type"), player_attr.get("position"))
-                if field is None:
-                    continue
-                name = player_attr.get("display_name") or player_attr.get("name")
+                stat_type = attr.get("stat_type")
                 line = attr.get("line_score")
-                if not name or " + " in name or line is None:
+                player_attr = resolve(rel, "new_player").get("attributes", {}) or {}
+                name = player_attr.get("display_name") or player_attr.get("name")
+                if not name or " + " in name or line is None or stat_type is None:
                     continue
-                rows.append({"player": name, "position": player_attr.get("position"), "field": field, "line": line})
+                key = (name, player_attr.get("position"), stat_type)
+                groups[key].append((line, attr.get("odds_type")))
+                group_meta[key] = player_attr.get("position")
             except Exception:
                 continue
+
+        rows = []
+        for (name, position, stat_type), entries in groups.items():
+            field = _pp_resolve_field(stat_type, position)
+            if field is None:
+                continue
+            fair_line = _pp_fair_line(entries)
+            if fair_line is None:
+                continue
+            rows.append({"player": name, "position": position, "field": field, "line": fair_line})
         return rows
     except Exception:
         return []
 
 
-def fetch_underdog_nfl_props():
+def fetch_prizepicks_nflszn_props():
+    """PrizePicks' season-long futures board (confirmed live 2026-09-07: 1300+
+    real standard-odds lines spanning Rush/Pass/Receiving Yards, Rush/Pass/Rec
+    TDs, Receptions, Pass INTs, FG Made) run through the exact same
+    stat-type map and fair-line resolution as the weekly puller -- just a
+    season total instead of one game's."""
+    return fetch_prizepicks_nfl_props(league_filter="NFLSZN")
+
+
+# Underdog's season-long stat keys (their weekly map's keys, "season_"
+# prefixed) -> the same compute_offense_points() fields. Thinner than
+# PrizePicks' season board (no receptions or FG props at all) but real, and a
+# useful second source -- see _UD_STAT_FIELD_MAP for the weekly equivalent.
+_UD_SEASON_STAT_FIELD_MAP = {
+    "season_pass_yards": "pass_yards",
+    "season_pass_tds": "pass_td",
+    "season_rush_yards": "rush_yards",
+    "season_rush_tds": "rush_td",
+    "season_receiving_yards": "rec_yards",
+    "season_rec_tds": "rec_td",
+}
+
+
+def fetch_underdog_nfl_props(stat_map=None):
     """One request returns Underdog's whole board across every sport. Returns
     a list of {player, position, field, line} dicts, field already mapped via
-    _UD_STAT_FIELD_MAP (never raises; [] on any failure)."""
+    `stat_map` (defaults to _UD_STAT_FIELD_MAP, the weekly full-game stats;
+    pass _UD_SEASON_STAT_FIELD_MAP for the season-long futures board instead)
+    (never raises; [] on any failure)."""
+    stat_map = stat_map if stat_map is not None else _UD_STAT_FIELD_MAP
     try:
         session = _market_session()
         session.headers["Referer"] = "https://underdogfantasy.com/"
@@ -1286,28 +1369,43 @@ def fetch_underdog_nfl_props():
                 ou = line.get("over_under", {}) or {}
                 appearance_stat = ou.get("appearance_stat", {}) or {}
                 stat = appearance_stat.get("stat")
-                # Excludes period_*/season_* variants (quarter/half props and
-                # season-long futures) -- only the plain full-game stat key maps
-                # cleanly onto a weekly fantasy projection.
-                field = _UD_STAT_FIELD_MAP.get(stat) if stat and not stat.startswith(("period_", "season_")) else None
+                # stat_map's own keys already disambiguate weekly ("passing_yds")
+                # from season-long ("season_pass_yards") -- no separate prefix
+                # filter needed, a lookup miss just means "not this map's stat".
+                field = stat_map.get(stat) if stat else None
                 if field is None:
                     continue
                 appearance = appearances.get(appearance_stat.get("appearance_id"), {}) or {}
                 player = players.get(appearance.get("player_id"), {}) or {}
                 if (player.get("sport_id") or appearance.get("sport_id")) != "NFL":
                     continue
-                name = ou.get("title") or " ".join(
-                    x for x in [player.get("first_name"), player.get("last_name")] if x
-                )
+                # `title` looked like a name fallback but never was one -- it's
+                # always "<player> <Stat Description> O/U" (e.g. "A.J. Brown
+                # Receiving Yards O/U"), confirmed live (2026-09-07) across every
+                # stat type sampled. Preferring it over the constructed name (as
+                # this used to) fed normalize_player_name() a string that could
+                # never match a real players.full_name -- so Underdog has been
+                # silently contributing ZERO rows to every market/season
+                # projection this whole time despite fetching real data,
+                # compounding the demon/goblin/boosted-line gap above. Title is
+                # now only a last-resort fallback for the rare row missing both
+                # first_name and last_name.
+                name = " ".join(x for x in [player.get("first_name"), player.get("last_name")] if x) or ou.get("title")
                 line_val = line.get("stat_value", line.get("line"))
                 if not name or line_val is None:
                     continue
-                # A "boosted" pick (payout_multiplier != 1.0 on either side) is
-                # Underdog's own deliberately-adjusted alternate, same concern as
-                # PrizePicks' demon/goblin -- only keep the real, unadjusted line.
-                options = line.get("options") or [{}]
-                if any(_ud_option_is_boosted(o) for o in options):
-                    continue
+                # Underdog "boosts" a line by changing its PAYOUT (the option's
+                # payout_multiplier), not the threshold itself -- confirmed live
+                # (2026-09-07): across 585 sampled player/stat groups, not one had
+                # more than one distinct stat_value, boosted or not. Skipping every
+                # boosted line used to be treated like PrizePicks' demon/goblin
+                # (which really does move the number), but here it was just
+                # throwing away real, unadjusted thresholds -- and it hit TD/
+                # reception props hardest (rush+rec TDs boosted ~99% of the time,
+                # receptions ~88%), which is exactly why RB/WR/TE projections were
+                # missing so much real value while QB (whose passing-yards line is
+                # almost never boosted) looked fine. So the line itself is used
+                # regardless of payout promotion.
                 position = player.get("position_name") or player.get("position_display_name")
                 rows.append({"player": name, "position": position, "field": field, "line": float(line_val)})
             except Exception:
@@ -1317,16 +1415,34 @@ def fetch_underdog_nfl_props():
         return []
 
 
-def sync_market_projections(db, force=False):
+def fetch_underdog_nflszn_props():
+    """Underdog's season-long lines (season_pass_yards, season_rush_tds, ...)
+    -- thinner than PrizePicks' season board (no receptions or FG props) but
+    real, and a second source for the stats it does cover."""
+    return fetch_underdog_nfl_props(stat_map=_UD_SEASON_STAT_FIELD_MAP)
+
+
+SEASON_PROJECTIONS_TTL_SECONDS = 6 * 60 * 60
+
+# market_projections (this week's lines) and season_projections (season-long
+# futures) are the same shape and the same refresh/lookup logic -- only the
+# source pulls, cache table, and cache lifetime differ. Shared here instead
+# of duplicated so a fix to one (like the fair-line resolution above) can't
+# quietly drift out of sync between the two.
+
+
+def _sync_projection_table(db, table, ttl_seconds, fetch_fns, force=False):
     if not force:
-        last = db.execute("SELECT MAX(updated_at) AS t FROM market_projections").fetchone()["t"]
-        if last and time.time() - last < MARKET_PROJECTIONS_TTL_SECONDS:
+        last = db.execute(f"SELECT MAX(updated_at) AS t FROM {table}").fetchone()["t"]
+        if last and time.time() - last < ttl_seconds:
             return True
 
-    # Two independent books, so one outage (or one book's mispriced number)
-    # doesn't singlehandedly drive the projection -- averaged below wherever
-    # both happen to cover the same player/stat.
-    props = fetch_prizepicks_nfl_props() + fetch_underdog_nfl_props()
+    # Multiple independent books, so one outage (or one book's mispriced
+    # number) doesn't singlehandedly drive the projection -- averaged below
+    # wherever more than one happens to cover the same player/stat.
+    props = []
+    for fetch_fn in fetch_fns:
+        props.extend(fetch_fn())
     if not props:
         return False
 
@@ -1365,10 +1481,10 @@ def sync_market_projections(db, force=False):
     # was a demon/goblin we now exclude) must lose their row here, not keep
     # whatever was last written. Clearing before each refresh is what makes
     # that true; an upsert alone only ever adds/updates, never removes.
-    db.execute("DELETE FROM market_projections")
+    db.execute(f"DELETE FROM {table}")
     db.executemany(
-        """
-        INSERT INTO market_projections
+        f"""
+        INSERT INTO {table}
             (player_id, pass_yards, pass_td, interceptions, rush_yards, rush_td, rec, rec_yards, rec_td, fg_made,
              fumbles_lost, xp_made, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -1385,13 +1501,27 @@ def sync_market_projections(db, force=False):
     return True
 
 
-def get_market_projection_map(db):
-    """player_id -> an offense-stat dict ready for compute_offense_points().
-    Only players with at least one qualifying market line appear here --
-    everyone else (deep bench, bye weeks, kickers/DEF with no props) is
-    absent, so callers fall back to the rank-based model for them."""
+def sync_market_projections(db, force=False):
+    return _sync_projection_table(
+        db, "market_projections", MARKET_PROJECTIONS_TTL_SECONDS,
+        [fetch_prizepicks_nfl_props, fetch_underdog_nfl_props], force,
+    )
+
+
+def sync_season_projections(db, force=False):
+    """Same idea as sync_market_projections, but pulled from each book's
+    season-long futures board instead of its weekly one -- a much longer TTL
+    is appropriate since a season total barely moves week to week (unlike a
+    weekly line, which is dead the moment that game kicks off)."""
+    return _sync_projection_table(
+        db, "season_projections", SEASON_PROJECTIONS_TTL_SECONDS,
+        [fetch_prizepicks_nflszn_props, fetch_underdog_nflszn_props], force,
+    )
+
+
+def _get_projection_map(db, table):
     out = {}
-    for r in db.execute("SELECT * FROM market_projections").fetchall():
+    for r in db.execute(f"SELECT * FROM {table}").fetchall():
         out[r["player_id"]] = {
             "pass_yards": r["pass_yards"], "pass_td": r["pass_td"], "int": r["interceptions"],
             "rush_yards": r["rush_yards"], "rush_td": r["rush_td"],
@@ -1401,51 +1531,94 @@ def get_market_projection_map(db):
     return out
 
 
-def compute_live_rankings(db, scoring):
-    """Rank the whole player pool by CURRENT projection (market-derived where
-    the board has a real line, the rank-based model otherwise) instead of the
-    bundled preseason board -- a projection that already reflects this week's
-    real betting lines is a strictly fresher ordering signal than a static
-    file written once and never touched again. Returns
-    {player_id: {"rank": int, "pos_rank": "RB1", "proj": float}}, overall rank
-    1..N across every position plus a position-scoped rank, both computed
-    fresh every call (cached on `g` per scoring format so one request that
-    touches several pages of the same league only computes this once).
+def get_market_projection_map(db):
+    """player_id -> an offense-stat dict ready for compute_offense_points(),
+    from THIS WEEK's market lines. Only players with at least one qualifying
+    line appear here -- everyone else (deep bench, bye weeks, kickers most
+    weeks) is absent, so callers fall back to the rank-based model for them."""
+    return _get_projection_map(db, "market_projections")
 
-    The bundled rankings file isn't gone -- player_projection()'s model
-    fallback still needs *some* ordinal signal to seed its decay curve for
-    players the market doesn't cover (deep bench, byes, kickers most weeks),
-    and the preseason board remains a reasonable relative ordering for that
-    internal purpose. It just no longer defines the rank anyone sees or the
-    value the draft/trade/waiver logic scores against -- that's proj now.
+
+def get_season_projection_map(db):
+    """Same shape as get_market_projection_map, but season-long totals --
+    what compute_live_rankings() and every player-evaluation page (Players
+    list, Player Profile, Draft board, Waivers) show as "proj" and rank
+    against. Week-specific pages (Matchup, Schedule, roster starters/bench)
+    deliberately keep using get_market_projection_map's weekly number instead
+    -- see compute_live_rankings()'s docstring."""
+    return _get_projection_map(db, "season_projections")
+
+
+# A season has 17 games; the model fallback (player_projection) estimates a
+# single typical game, so scaling it to a season total needs an assumed
+# games-played count. 16 (one missed game) rather than the full 17 -- byes
+# aren't missed games, so this is purely a modest, explicit discount for the
+# real chance of an injury/rest game somewhere in the year, not a claim about
+# any specific player's health. Only applies to the fallback: a real season
+# market line (get_season_projection_map) already prices the whole season,
+# missed games and all, with no scaling needed.
+SEASON_GAMES_ASSUMPTION = 16
+
+
+def compute_live_rankings(db, scoring):
+    """Rank the whole player pool for DRAFT/TRADE/WAIVER/BROWSE purposes --
+    Players list, Player Profile, the draft board's available-player pool,
+    and waiver adds. Returns {player_id: {"rank": int, "pos_rank": "RB1",
+    "proj": float}}, computed fresh every call (cached on `g` per scoring
+    format so one request touching several pages of the same league only
+    computes this once).
+
+    RANK/POS_RANK reflect SEASON-LONG value: primarily the real top-200
+    consensus board bundled in data/rankings_top500.json (rank_ppr/rank_half/
+    rank_std, seeded into the players table by sync_players), which is what a
+    real draft/trade decision should be valued against -- not reordered by a
+    single week's betting-market variance. That board only covers ~200 real
+    players, though, so everyone else (deep bench, practice-squad-adjacent
+    players the market and consensus board are both silent on) ties at the
+    same sentinel seed rank (999999) and falls back to season PROJECTION as a
+    tiebreaker, so waiver-wire browsing below the board still has a sensible
+    order instead of an arbitrary one.
+
+    PROJ is a season total: a real season-long market line (PrizePicks'
+    NFLSZN + Underdog's season_* board, both run through the same
+    compute_offense_points() the weekly pipeline uses) where one exists,
+    else the rank-based model scaled to a season via SEASON_GAMES_ASSUMPTION.
+    This used to be a single week's number (and used to also drive RANK,
+    which is the "ranked off of projection"/"season proj not week 1" bug
+    reported live and fixed here) -- week-specific pages (Matchup, Schedule,
+    roster starters/bench) are unaffected: they call with_projections()
+    directly against get_market_projection_map(), not this function.
     """
     cache_key = f"_live_rankings_{scoring}"
     cached = getattr(g, cache_key, None)
     if cached is not None:
         return cached
 
-    sync_market_projections(db)
-    market_map = get_market_projection_map(db)
+    sync_season_projections(db)
+    season_map = get_season_projection_map(db)
     seed_col = RANK_COLUMN_BY_SCORING.get(scoring, "rank_half")
     seed_rows = db.execute(f"SELECT id, position, depth_chart_order, {seed_col} AS seed_rank FROM players").fetchall()
 
     scored = []
     for r in seed_rows:
-        market_o = market_map.get(r["id"])
-        proj = (
-            compute_offense_points(market_o, scoring) if market_o is not None
-            else player_projection(r["position"], r["seed_rank"], scoring, r["depth_chart_order"])
-        )
+        season_o = season_map.get(r["id"])
+        if season_o is not None:
+            proj = compute_offense_points(season_o, scoring)
+        else:
+            game_proj = player_projection(r["position"], r["seed_rank"], scoring, r["depth_chart_order"])
+            proj = round(game_proj * SEASON_GAMES_ASSUMPTION, 1) if game_proj is not None else None
         if proj is None:
             continue
-        scored.append((r["id"], r["position"], proj))
-    # Highest projection first; a stable sort keeps ties in their original
-    # (preseason-seeded) relative order rather than shuffling them randomly.
-    scored.sort(key=lambda t: -t[2])
+        scored.append((r["id"], r["position"], r["seed_rank"], proj))
+    # Real board rank first (ascending -- rank 1 is best); within the same
+    # seed rank (overwhelmingly the 999999 "not on the board" tier), highest
+    # season proj next, so unranked players still sort sensibly among
+    # themselves instead of by arbitrary DB row order.
+    scored.sort(key=lambda t: (t[2], -t[3]))
 
     result = {}
     pos_counts = {}
-    for i, (pid, pos, proj) in enumerate(scored, start=1):
+    for i, (pid, pos, _seed_rank, proj) in enumerate(scored, start=1):
         pos_counts[pos] = pos_counts.get(pos, 0) + 1
         result[pid] = {"rank": i, "pos_rank": f"{pos}{pos_counts[pos]}", "proj": proj}
     setattr(g, cache_key, result)
@@ -1663,7 +1836,7 @@ def summarize_stat_line(stat_line_json, position):
     return ", ".join(parts) if parts else "—"
 
 
-def build_player_outlook(recent_avg, season_avg, proj, proj_source, injury_label, opponent):
+def build_player_outlook(recent_avg, season_avg, proj, proj_source, injury_label):
     """A few grounded sentences from real numbers already on the page --
     not a fabricated scouting-report essay. Each line only appears when the
     underlying number actually exists."""
@@ -1678,10 +1851,11 @@ def build_player_outlook(recent_avg, season_avg, proj, proj_source, injury_label
         else:
             lines.append(f"Steady — {recent_avg:.1f} pts/game over the last 3 weeks, in line with a {season_avg:.1f} season average.")
     if proj is not None:
-        source_label = "the betting market" if proj_source == "market" else "RIVYL's model"
-        # opponent already reads as "vs GB" / "@ GB" / "BYE" -- no extra preposition needed.
-        opp_bit = f" {opponent}" if opponent else ""
-        lines.append(f"Projected for {proj:.1f} pts this week{opp_bit}, per {source_label}.")
+        source_label = "the season-long betting market" if proj_source == "market" else "RIVYL's model"
+        # proj is a season total (see compute_live_rankings) -- opponent is an
+        # inherently weekly concept (who they play THIS week), so it doesn't
+        # belong on this line even though it's available to the caller.
+        lines.append(f"Projected for {proj:.1f} pts this season, per {source_label}.")
     return lines
 
 
@@ -3703,8 +3877,8 @@ def player_profile(league_id, player_id):
 
     live_ranks = compute_live_rankings(db, league["scoring"])
     live = live_ranks.get(player_id)
-    market_map = get_market_projection_map(db)
-    proj_source = "market" if market_map.get(player_id) is not None else ("model" if live else None)
+    season_map = get_season_projection_map(db)
+    proj_source = "market" if season_map.get(player_id) is not None else ("model" if live else None)
 
     stat_rows = db.execute(
         "SELECT * FROM player_week_stats WHERE player_id = ? ORDER BY week", (player_id,)
@@ -3744,7 +3918,7 @@ def player_profile(league_id, player_id):
 
     outlook = build_player_outlook(
         recent_avg, season_avg, live["proj"] if live else None, proj_source,
-        INJURY_LABELS.get(player["injury_status"]), opponent,
+        INJURY_LABELS.get(player["injury_status"]),
     )
     if player["notes"]:
         # A real analyst note from the preseason board takes priority over
