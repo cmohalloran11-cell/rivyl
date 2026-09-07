@@ -18,6 +18,23 @@
     {% if team_projection %}&middot; <span class="stat-num">{{ '%.1f'|format(team_projection) }}</span> projected{% endif %}
   </p>
 
+  {% if is_my_team and league['draft_status'] == 'complete' %}
+    <div class="status-strip">
+      <a class="status-pill {% if pending_claims_count %}status-pill-active{% endif %}"
+         href="{{ url_for('waivers_page', league_id=league['id'], tab='claims') }}">
+        <span class="status-pill-icon">📋</span>
+        <span class="status-pill-count">{{ pending_claims_count }}</span>
+        <span class="status-pill-label">Claim{{ 's' if pending_claims_count != 1 }} Pending</span>
+      </a>
+      <a class="status-pill {% if pending_trades_count %}status-pill-active{% endif %}"
+         href="{{ url_for('trades_page', league_id=league['id']) }}">
+        <span class="status-pill-icon">🔁</span>
+        <span class="status-pill-count">{{ pending_trades_count }}</span>
+        <span class="status-pill-label">Trade Offer{{ 's' if pending_trades_count != 1 }}</span>
+      </a>
+    </div>
+  {% endif %}
+
   {% if is_my_team %}
     <div class="card invite-card">
       <div class="invite-label">Customize your team</div>

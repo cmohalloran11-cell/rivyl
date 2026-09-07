@@ -2883,6 +2883,24 @@ def team_detail(league_id, team_id):
         "SELECT * FROM teams WHERE league_id = ? ORDER BY slot_index", (league_id,)
     ).fetchall()
     my_team_id = get_my_team_id(league_id, all_teams)
+    is_my_team = my_team_id == team_id
+
+    # At-a-glance "does anything need my attention" strip -- only meaningful
+    # for your own team (a pending waiver claim or trade offer is personal,
+    # not something to show while browsing someone else's roster), and only
+    # once the draft's done (waivers/trades don't exist before then).
+    pending_claims_count = pending_trades_count = 0
+    if is_my_team and league["draft_status"] == "complete":
+        pending_claims_count = db.execute(
+            "SELECT COUNT(*) AS c FROM waiver_claims WHERE league_id = ? AND team_id = ? AND status = 'pending'",
+            (league_id, team_id),
+        ).fetchone()["c"]
+        # Incoming only -- offers actually awaiting THIS team's decision,
+        # not ones this team sent and is waiting on someone else for.
+        pending_trades_count = db.execute(
+            "SELECT COUNT(*) AS c FROM trades WHERE league_id = ? AND to_team_id = ? AND status = 'pending'",
+            (league_id, team_id),
+        ).fetchone()["c"]
 
     return render_template(
         "team.html",
@@ -2894,8 +2912,10 @@ def team_detail(league_id, team_id):
         bench=bench,
         matchup=matchup,
         my_team_id=my_team_id,
-        is_my_team=(my_team_id == team_id),
+        is_my_team=is_my_team,
         team_kits=TEAM_KITS,
+        pending_claims_count=pending_claims_count,
+        pending_trades_count=pending_trades_count,
     )
 
 

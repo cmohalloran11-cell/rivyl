@@ -374,6 +374,109 @@ button, .btn, .btn-small, input, select {
   .draft-players-table td:nth-child(5) { grid-column: 3; }
   .draft-players-table td:nth-child(6) { grid-column: 4; }
   .draft-players-table td:nth-child(7) { grid-row: 1 / 3; grid-column: 6; }
+
+  /* Same 2-line card idea as the draft board above, applied to the other
+     three tables people browse most on a phone (Players, Waivers,
+     Standings): a bold headline line (name/team) with the one action or
+     number that matters most, a muted meta line underneath with everything
+     else -- so the same information ESPN's app fits natively on one screen
+     fits here too, instead of needing a sideways scroll to reach it. */
+  .players-card-table thead,
+  .waivers-card-table thead,
+  .standings-card-table thead { display: none; }
+  .players-card-table, .players-card-table tbody,
+  .waivers-card-table, .waivers-card-table tbody,
+  .standings-card-table, .standings-card-table tbody { display: block; width: 100%; }
+  .players-card-table { overflow-x: visible !important; }
+  .waivers-card-table { overflow-x: visible !important; }
+  .standings-card-table { overflow-x: visible !important; }
+  .players-card-table td, .waivers-card-table td, .standings-card-table td {
+    display: block;
+    border-bottom: none !important;
+    padding: 0 !important;
+  }
+  .players-card-table tr, .waivers-card-table tr, .standings-card-table tr {
+    display: grid;
+    align-items: center;
+    column-gap: 8px;
+    row-gap: 3px;
+    padding: 10px 4px;
+    border-bottom: 1px solid var(--border-soft);
+  }
+  .players-card-table tr:last-child, .waivers-card-table tr:last-child, .standings-card-table tr:last-child { border-bottom: none; }
+
+  /* Players: face | Name+badges (row1, spans the meta columns) | Season
+     Proj | Owner-or-+Add-action -- team/opp/pos-rank underneath. Overall
+     Rank (1-500 across every position) is dropped on mobile only -- Pos
+     Rank ("WR12") is the more actionable number day to day, and there
+     genuinely isn't room for both without crushing everything else.
+     The last two columns are bounded (not auto) on purpose: an `auto` grid
+     track sizes to the WIDEST content across every row sharing it, and a
+     single long custom team name would have inflated that column (and
+     crushed the flexible meta columns down to a few pixels) for every row
+     on the page, not just its own -- confirmed live. */
+  .players-card-table tr {
+    grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 46px) minmax(0, 80px);
+    column-gap: 6px;
+  }
+  .players-card-table td:nth-child(1) { grid-row: 1 / 3; grid-column: 1; }
+  .players-card-table td:nth-child(2) { grid-row: 1; grid-column: 2 / 5; font-weight: 700; }
+  .players-card-table td:nth-child(5) { display: none; }
+  .players-card-table td:nth-child(3),
+  .players-card-table td:nth-child(4),
+  .players-card-table td:nth-child(6) {
+    grid-row: 2; font-size: 0.72rem; color: var(--text-faint);
+  }
+  .players-card-table td:nth-child(3) { grid-column: 2; }
+  .players-card-table td:nth-child(4) { grid-column: 3; }
+  .players-card-table td:nth-child(6) { grid-column: 4; }
+  .players-card-table td:nth-child(7) { grid-row: 1; grid-column: 5; font-weight: 700; }
+  .players-card-table td:nth-child(8) { grid-row: 1 / 3; grid-column: 6; text-align: right; font-size: 0.78rem; }
+
+  /* Waivers: face | Name+badges (row1) | Claim button (row1, always
+     visible) -- team/opp/rank/proj underneath, same idea as the draft
+     board's own player list (this table is its closest relative). */
+  .waivers-card-table tr {
+    grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) auto auto;
+  }
+  .waivers-card-table td:nth-child(1) { grid-row: 1 / 3; grid-column: 1; }
+  .waivers-card-table td:nth-child(2) { grid-row: 1; grid-column: 2 / 5; font-weight: 700; }
+  .waivers-card-table td:nth-child(3),
+  .waivers-card-table td:nth-child(4),
+  .waivers-card-table td:nth-child(5) {
+    grid-row: 2; font-size: 0.78rem; color: var(--text-faint);
+  }
+  .waivers-card-table td:nth-child(3) { grid-column: 2; }
+  .waivers-card-table td:nth-child(4) { grid-column: 3; }
+  .waivers-card-table td:nth-child(5) { grid-column: 4; }
+  .waivers-card-table td:nth-child(6) { grid-row: 2; grid-column: 5; font-weight: 700; color: var(--text); }
+  .waivers-card-table td:nth-child(7) { grid-row: 1 / 3; grid-column: 6; }
+
+  /* Standings: Rank | Team name+commish tag (row1) | W-L (row1, the
+     headline stat) -- owner/win%/PF/PA/streak underneath, View-> pinned
+     to the far right across both lines. Knockout format (5 plain cells:
+     rank/team/owner/status/view) still reads fine as a simpler 2-column
+     card via the generic .teams-table mobile fallback above, so this
+     specific grid only needs to cover the redraft/dynasty 9-cell shape. */
+  .standings-card-table tr {
+    grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) auto auto;
+  }
+  .standings-card-table td:nth-child(1) { grid-row: 1 / 3; grid-column: 1; }
+  .standings-card-table td:nth-child(2) { grid-row: 1; grid-column: 2 / 6; font-weight: 700; }
+  .standings-card-table td:nth-child(4) { grid-row: 1; grid-column: 6; font-weight: 700; }
+  .standings-card-table td:nth-child(3),
+  .standings-card-table td:nth-child(5),
+  .standings-card-table td:nth-child(6),
+  .standings-card-table td:nth-child(7),
+  .standings-card-table td:nth-child(8) {
+    grid-row: 2; font-size: 0.78rem; color: var(--text-faint);
+  }
+  .standings-card-table td:nth-child(3) { grid-column: 2; }
+  .standings-card-table td:nth-child(5) { grid-column: 3; }
+  .standings-card-table td:nth-child(6) { grid-column: 4; }
+  .standings-card-table td:nth-child(7) { grid-column: 5; }
+  .standings-card-table td:nth-child(8) { grid-column: 6; }
+  .standings-card-table td:nth-child(9) { grid-row: 1 / 3; grid-column: 7; text-align: right; }
 }
 
 /* ---- Page shell ---- */
@@ -540,6 +643,37 @@ button:disabled, .btn:disabled { opacity: 0.5; cursor: not-allowed; transform: n
   font-weight: 700;
   margin-top: 4px;
 }
+
+/* Roster "does anything need my attention" strip -- a pending waiver claim
+   or trade offer used to only surface by visiting Waivers/Trades directly;
+   this puts both at a glance right on the page you land on. */
+.status-strip { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 18px; }
+.status-pill {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 8px 16px 8px 12px;
+  text-decoration: none;
+  color: var(--text-dim);
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+.status-pill:hover { border-color: var(--border-bright); color: var(--text); }
+.status-pill-icon { font-size: 1rem; line-height: 1; }
+.status-pill-count {
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+.status-pill-label { font-size: 0.78rem; font-weight: 600; }
+.status-pill-active {
+  border-color: var(--accent);
+  background: rgba(139, 92, 246, 0.1);
+}
+.status-pill-active .status-pill-count { color: var(--accent-strong); }
 
 .outlook-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
 .outlook-list li {
