@@ -1190,6 +1190,18 @@ _PP_STAT_FIELD_MAP = {
 _PP_COMBO_TD_STAT_TYPES = {"Pass+Rush+Rec TDs", "Pass+Rush TDs", "Rush+Rec TDs", "Pass+Rec TDs", "Player Touchdowns"}
 _PP_COMBO_TD_BUCKET_BY_POSITION = {"QB": "pass_td"}
 _PP_COMBO_TD_DEFAULT_BUCKET = "rush_td"
+# A combo line ("Player Touchdowns", etc.) is that player's TOTAL touchdown
+# count across every way they score -- it's a substitute for a direct
+# single-type line, not an addition to one. Confirmed live (2026-09-08):
+# Malik Nabers had BOTH "Player Touchdowns" (bucketed to rush_td, the non-QB
+# default) AND a direct "Rec TDs" line, and the old code fed both into
+# compute_offense_points -- crediting him for his overall TD total AND his
+# receiving-TD-specific total as if they were two separate kinds of
+# touchdown, inflating his weekly proj by a combo line's worth of 6pts on
+# top of what his real receiving-TD line already covered. Once any direct
+# single-type TD line exists for a player, the combo is redundant with it
+# and gets dropped entirely rather than bucketed and summed alongside it.
+_PP_DIRECT_TD_STAT_TYPES = {"Pass TDs", "Rush TDs", "Rec TDs"}
 
 
 def _pp_resolve_field(stat_type, position):
@@ -1313,9 +1325,11 @@ def fetch_prizepicks_nfl_props(league_filter="NFL"):
         # Pass 1: group every line by (player, position, raw stat_type) so
         # standard/goblin/demon variants of the SAME market sit together --
         # resolved to one fair value per group in pass 2, before it ever
-        # reaches the field-level (rush_td, rec, ...) averaging below.
+        # reaches the field-level (rush_td, rec, ...) averaging below. Also
+        # track which direct single-type TD lines each player has, so a
+        # combo line for that same player can be skipped as redundant below.
         groups = defaultdict(list)
-        group_meta = {}
+        direct_td_types_by_player = defaultdict(set)
         for proj in payload.get("data", []):
             try:
                 attr = proj.get("attributes", {}) or {}
@@ -1329,14 +1343,17 @@ def fetch_prizepicks_nfl_props(league_filter="NFL"):
                 name = player_attr.get("display_name") or player_attr.get("name")
                 if not name or " + " in name or line is None or stat_type is None:
                     continue
-                key = (name, player_attr.get("position"), stat_type)
-                groups[key].append((line, attr.get("odds_type")))
-                group_meta[key] = player_attr.get("position")
+                position = player_attr.get("position")
+                groups[(name, position, stat_type)].append((line, attr.get("odds_type")))
+                if stat_type in _PP_DIRECT_TD_STAT_TYPES:
+                    direct_td_types_by_player[(name, position)].add(stat_type)
             except Exception:
                 continue
 
         rows = []
         for (name, position, stat_type), entries in groups.items():
+            if stat_type in _PP_COMBO_TD_STAT_TYPES and direct_td_types_by_player.get((name, position)):
+                continue
             field = _pp_resolve_field(stat_type, position)
             if field is None:
                 continue
