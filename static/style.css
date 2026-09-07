@@ -1269,7 +1269,15 @@ input:focus, select:focus, textarea:focus {
 }
 @media (max-width: 1300px) { .draft-layout { grid-template-columns: 280px minmax(0, 1fr) 300px; } }
 @media (max-width: 1000px) {
-  .draft-layout { grid-template-columns: 1fr; }
+  /* minmax(0, 1fr), not a bare 1fr -- a bare 1fr track's minimum width
+     defaults to its content's min-content size, so a wide child (the
+     players table, which relies on its OWN overflow-x:auto to scroll
+     internally) was inflating this track past the viewport instead of
+     shrinking to fit it, which pushed body/html wider than the screen and
+     made the entire draft page pan sideways on mobile. minmax(0, 1fr) lets
+     the track actually shrink to the viewport, so the table's own scroll
+     handles the overflow like it does everywhere else. */
+  .draft-layout { grid-template-columns: minmax(0, 1fr); }
   .draft-ticker-col, .draft-teams-col { position: static; max-height: none; }
 }
 

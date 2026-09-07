@@ -1917,6 +1917,61 @@ def is_league_creator(db, league_id):
     return commish is not None
 
 
+def _is_league_member(db, league_id, user_id):
+    """True if the logged-in account owns ANY team in this league (the
+    commissioner's own team included -- creating a league seats you same as
+    joining one)."""
+    if not user_id:
+        return False
+    return db.execute(
+        "SELECT 1 FROM teams WHERE league_id = ? AND user_id = ?", (league_id, user_id)
+    ).fetchone() is not None
+
+
+@app.before_request
+def require_league_membership():
+    """Every /leagues/<league_id>/... page and JSON endpoint is private to
+    that league's own members. None of the ~45 routes under this prefix
+    checked that on their own -- confirmed live: a fully anonymous request to
+    e.g. /leagues/1 rendered the full roster, matchups, trades, and even the
+    commissioner's invite code for a league that visitor has no part in.
+    Gated centrally here rather than patched into every individual route, so
+    a route added later is private by default instead of by remembering to
+    add a check to it.
+
+    Membership = owns a team in that league (see _is_league_member) --
+    exactly what join_league() grants, and it lives at /join/<code>, not
+    under /leagues/<id>/, so it's untouched by this and stays reachable to
+    become a member in the first place. A league_id that doesn't exist is
+    let through untouched too -- that's the route's own "not found" to show,
+    not an access question.
+    """
+    league_id = (request.view_args or {}).get("league_id")
+    if league_id is None:
+        return None
+
+    db = get_db()
+    if db.execute("SELECT 1 FROM leagues WHERE id = ?", (league_id,)).fetchone() is None:
+        return None
+
+    if _is_league_member(db, league_id, session.get("user_id")):
+        return None
+
+    # GET is a real page load (browser navigation) in every route under this
+    # prefix except the two JSON-polling endpoints (draft/state, draft/chat)
+    # -- Accept-header sniffing isn't reliable here (this app's own fetch()
+    # calls never set an Accept, so they look identical to a plain page nav),
+    # so redirect+flash for GET and a plain JSON 403 for everything else
+    # (POSTs, and those two polling endpoints) is the simple, correct split.
+    if request.method == "GET" and not request.path.endswith(("/draft/state", "/draft/chat")):
+        if session.get("user_id"):
+            flash("You're not a member of that league.")
+            return redirect(url_for("index"))
+        flash("Log in to view that league.")
+        return redirect(url_for("login", next=request.full_path))
+    return jsonify({"error": "not_a_member", "message": "You're not a member of that league."}), 403
+
+
 def get_current_user(db):
     user_id = session.get("user_id")
     if not user_id:
@@ -2020,6 +2075,13 @@ def login():
 def index():
     db = get_db()
     current_user = get_current_user(db)
+    # Only leagues the logged-in account actually belongs to (owns a team
+    # in) -- this used to list every league on the whole platform to every
+    # visitor, logged in or not, complete with the commissioner's real name
+    # and a direct link into that league's full roster/trades/commissioner
+    # tools. That's the same private-by-membership model every /leagues/<id>
+    # route now enforces (see require_league_membership); a public directory
+    # of every league contradicts the app's own invite-code-only join model.
     leagues = db.execute(
         """
         SELECT l.*,
@@ -2027,8 +2089,12 @@ def index():
                (SELECT id FROM teams t WHERE t.league_id = l.id AND t.is_commissioner = 1) AS commissioner_team_id,
                (SELECT user_id FROM teams t WHERE t.league_id = l.id AND t.is_commissioner = 1) AS commissioner_user_id
         FROM leagues l
+        WHERE ? IS NOT NULL AND EXISTS (
+            SELECT 1 FROM teams t WHERE t.league_id = l.id AND t.user_id = ?
+        )
         ORDER BY l.created_at DESC
-        """
+        """,
+        (current_user["id"] if current_user else None, current_user["id"] if current_user else None),
     ).fetchall()
     deletable_ids = {
         l["id"] for l in leagues
