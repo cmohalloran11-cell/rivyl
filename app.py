@@ -1203,6 +1203,27 @@ _PP_COMBO_TD_DEFAULT_BUCKET = "rush_td"
 # and gets dropped entirely rather than bucketed and summed alongside it.
 _PP_DIRECT_TD_STAT_TYPES = {"Pass TDs", "Rush TDs", "Rec TDs"}
 
+# Same idea, for yardage: PrizePicks sometimes only posts a combined yardage
+# line instead of splitting it by type -- confirmed live (2026-09-08) on
+# Ashton Jeanty, whose only real standard-odds yardage number that week was
+# a "Rush+Rec Yds" line (66.5); no separate Rush Yards or Receiving Yards
+# line existed at all. Since neither of those direct stat_types map anywhere
+# on their own, that combo was being silently dropped entirely -- a bell-cow
+# RB1 crediting zero rushing AND zero receiving yards despite the market
+# actually pricing him at 66.5. Bucket it like the TD combos, and for the
+# same reason skip it if a direct split already exists for any of its
+# component stats (the combo is a substitute for the split, not an addition
+# to it) -- rush/rec yards score identically (1pt/10yds either way) so a
+# skipped combo never changes anyone's total, it just avoids double-pricing
+# the same yardage under both the direct line and the combo.
+_PP_COMBO_YARDS_COMPONENTS = {
+    "Pass+Rush Yds": ("Pass Yards", "Rush Yards"),
+    "Rush+Rec Yds": ("Rush Yards", "Receiving Yards"),
+    "Pass+Rush+Rec Yds": ("Pass Yards", "Rush Yards", "Receiving Yards"),
+}
+_PP_COMBO_YARDS_BUCKET_BY_POSITION = {"QB": "pass_yards"}
+_PP_COMBO_YARDS_DEFAULT_BUCKET = "rush_yards"
+
 
 def _pp_resolve_field(stat_type, position):
     field = _PP_STAT_FIELD_MAP.get(stat_type)
@@ -1210,6 +1231,8 @@ def _pp_resolve_field(stat_type, position):
         return field
     if stat_type in _PP_COMBO_TD_STAT_TYPES:
         return _PP_COMBO_TD_BUCKET_BY_POSITION.get(position, _PP_COMBO_TD_DEFAULT_BUCKET)
+    if stat_type in _PP_COMBO_YARDS_COMPONENTS:
+        return _PP_COMBO_YARDS_BUCKET_BY_POSITION.get(position, _PP_COMBO_YARDS_DEFAULT_BUCKET)
     return None
 
 # Underdog's stat keys -> the same fields. Underdog covers a couple PrizePicks
@@ -1326,10 +1349,11 @@ def fetch_prizepicks_nfl_props(league_filter="NFL"):
         # standard/goblin/demon variants of the SAME market sit together --
         # resolved to one fair value per group in pass 2, before it ever
         # reaches the field-level (rush_td, rec, ...) averaging below. Also
-        # track which direct single-type TD lines each player has, so a
-        # combo line for that same player can be skipped as redundant below.
+        # track every direct (non-combo) stat_type each player has a line
+        # for, so a combo line for that same player can be skipped as
+        # redundant below when a real direct split already exists.
         groups = defaultdict(list)
-        direct_td_types_by_player = defaultdict(set)
+        direct_types_by_player = defaultdict(set)
         for proj in payload.get("data", []):
             try:
                 attr = proj.get("attributes", {}) or {}
@@ -1345,14 +1369,18 @@ def fetch_prizepicks_nfl_props(league_filter="NFL"):
                     continue
                 position = player_attr.get("position")
                 groups[(name, position, stat_type)].append((line, attr.get("odds_type")))
-                if stat_type in _PP_DIRECT_TD_STAT_TYPES:
-                    direct_td_types_by_player[(name, position)].add(stat_type)
+                if stat_type in _PP_STAT_FIELD_MAP:
+                    direct_types_by_player[(name, position)].add(stat_type)
             except Exception:
                 continue
 
         rows = []
         for (name, position, stat_type), entries in groups.items():
-            if stat_type in _PP_COMBO_TD_STAT_TYPES and direct_td_types_by_player.get((name, position)):
+            direct_types = direct_types_by_player.get((name, position), set())
+            if stat_type in _PP_COMBO_TD_STAT_TYPES and direct_types & _PP_DIRECT_TD_STAT_TYPES:
+                continue
+            combo_components = _PP_COMBO_YARDS_COMPONENTS.get(stat_type)
+            if combo_components and direct_types & set(combo_components):
                 continue
             field = _pp_resolve_field(stat_type, position)
             if field is None:
@@ -1467,6 +1495,11 @@ def fetch_underdog_nflszn_props():
 
 SEASON_PROJECTIONS_TTL_SECONDS = 6 * 60 * 60
 
+# The fields that count as "the market actually has a read on this player,"
+# not just a lone touchdown (or interception/fumble) prop -- see
+# _sync_projection_table's filter below.
+_MARKET_VOLUME_FIELDS = {"pass_yards", "rush_yards", "rec", "rec_yards", "fg_made"}
+
 # market_projections (this week's lines) and season_projections (season-long
 # futures) are the same shape and the same refresh/lookup logic -- only the
 # source pulls, cache table, and cache lifetime differ. Shared here instead
@@ -1507,6 +1540,21 @@ def _sync_projection_table(db, table, ttl_seconds, fetch_fns, force=False):
     by_player = {
         pid: {field: sum(values) / len(values) for field, values in fields.items()}
         for pid, fields in lines_by_player.items()
+        # A player with ONLY a touchdown line (no real yardage/reception/FG
+        # coverage at all) isn't "the market's read on this player" -- it's
+        # one thin, easy-to-post prop with nothing behind it. Treating that
+        # like full coverage meant crediting them their (real) 0.5ish TD
+        # and a hard ZERO on every yardage/reception field the market simply
+        # hadn't gotten around to pricing yet, which silently tanked a lot of
+        # real depth-chart starters (a rookie WR2, a bell-cow RB whose
+        # injury status has the book holding off on volume props) down to a
+        # few points. Confirmed live (2026-09-08): Makai Lemon, Zachariah
+        # Branch, Ashton Jeanty all had exactly this shape. Requiring at
+        # least one real volume/FG stat before trusting this player's market
+        # row at all lets these correctly fall through to the rank-based
+        # model instead, which actually accounts for their real depth-chart
+        # role.
+        if _MARKET_VOLUME_FIELDS & fields.keys()
     }
 
     now = time.time()
@@ -5842,8 +5890,21 @@ def player_projection(position, rank, scoring, depth_chart_order=None):
     # rank-based estimate; 2+ means a real backup, who barely plays
     # regardless of talent, so knock the projection down hard on top of
     # whatever the rank curve already says.
+    #
+    # WR is the one position where that "barely plays" assumption breaks:
+    # the league-wide base personnel package is 11 personnel (3 real
+    # receivers) on a clear majority of snaps, so a team's WR2/WR3 is a real
+    # every-down role, not a bench afterthought the way a backup QB/RB/TE
+    # is. Confirmed live (2026-09-08): the flat penalty had Makai Lemon
+    # (WR45 on the real consensus board, a rookie PHI WR3 with no market
+    # coverage yet to fall back on instead) projecting at 0.6 -- lower than
+    # players ranked hundreds of spots behind him at other positions, purely
+    # because of this multiplier, not his actual talent/role.
     if isinstance(depth_chart_order, int) and depth_chart_order >= 2:
-        decay_factor *= 0.35 if depth_chart_order == 2 else 0.12
+        if position == "WR":
+            decay_factor *= 0.75 if depth_chart_order == 2 else 0.5
+        else:
+            decay_factor *= 0.35 if depth_chart_order == 2 else 0.12
     proj = cfg["peak"] * decay_factor
     if position in PPR_BONUS_POSITIONS:
         proj += PPR_PROJECTION_BONUS.get(scoring, 0.0) * decay_factor
