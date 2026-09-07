@@ -60,5 +60,15 @@
       </main>
     </div>
   </div>
+  <script>
+    // On the mobile horizontally-scrolling nav strip, bring the active tab
+    // into view -- otherwise landing on e.g. Standings (tab 8 of 11) shows
+    // an unscrolled Home-first strip with no visible indication of where
+    // you actually are.
+    (function () {
+      var active = document.querySelector('.league-tabs .league-tab-active');
+      if (active) active.scrollIntoView({ block: 'nearest', inline: 'center' });
+    })();
+  </script>
 </body>
 </html>

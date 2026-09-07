@@ -1,5 +1,8 @@
 {% macro league_tabs(league, my_team_id, active) %}
-<nav class="league-tabs">
+{# base.html already wraps {% block league_nav %} in <nav class="league-tabs">
+   -- this macro must NOT add a second one, or the mobile fixed bottom-bar
+   CSS (which targets .league-tabs directly) ends up applied to two nested
+   elements and collapses to a near-zero-height strip pinned off-screen. #}
   <a class="league-tab {% if active == 'home' %}league-tab-active{% endif %}"
      href="{{ url_for('home_page', league_id=league['id']) }}"><span class="league-tab-icon">🏠</span> Home</a>
   {% if my_team_id %}
@@ -26,7 +29,6 @@
      href="{{ url_for('league_messages', league_id=league['id']) }}"><span class="league-tab-icon">💬</span> Chat</a>
   <a class="league-tab {% if active == 'league' %}league-tab-active{% endif %}"
      href="{{ url_for('league_home', league_id=league['id']) }}"><span class="league-tab-icon">🏆</span> League</a>
-</nav>
 {% endmacro %}
 
 {% macro player_face(p, size='sm') %}

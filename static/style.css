@@ -290,8 +290,12 @@ button, .btn, .btn-small, input, select {
     left: 0;
     right: 0;
     flex-direction: row;
-    justify-content: space-around;
-    padding: 6px 4px;
+    justify-content: flex-start;
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    padding: 6px 6px;
     border-top: 1px solid var(--border);
     background: rgba(10, 11, 20, 0.94);
     backdrop-filter: blur(10px);
@@ -299,17 +303,29 @@ button, .btn, .btn-small, input, select {
     box-shadow: 0 -6px 24px rgba(0, 0, 0, 0.4);
     z-index: 45;
   }
+  .league-tabs::-webkit-scrollbar { display: none; }
   .league-tab {
     flex-direction: column;
     gap: 2px;
-    padding: 6px 4px 8px;
+    padding: 6px 10px 8px;
     font-size: 0.62rem;
-    flex: 1;
+    flex: 0 0 auto;
+    min-width: 58px;
     text-align: center;
   }
   .league-tab-active::before { left: 20%; right: 20%; top: -6px; bottom: auto; width: auto; height: 3px; border-radius: 3px 3px 0 0; }
   .league-tab-icon { font-size: 1.1rem; }
   body { padding-bottom: 70px; }
+
+  /* Fallback for any .teams-table not already sitting inside a
+     .table-scroll/.player-table-wrap container -- auto-layout tables grow
+     past width:100% when content demands it, so the table itself can just
+     host the horizontal scrollbar directly instead of forcing the page
+     body to pan sideways. !important on overflow-x only: the base
+     .teams-table rule below this media query in the cascade sets the
+     shorthand overflow:hidden (to clip rounded corners), which would
+     otherwise win on source order alone and silently defeat this. */
+  .teams-table { display: block; overflow-x: auto !important; -webkit-overflow-scrolling: touch; max-width: 100%; }
 }
 
 /* ---- Page shell ---- */
@@ -955,7 +971,7 @@ input:focus, select:focus, textarea:focus {
 
 /* ---- Player rows (roster / players list) ---- */
 
-.player-table-wrap { max-height: calc(100vh - 420px); min-height: 260px; overflow-y: auto; border-radius: var(--radius-lg); }
+.player-table-wrap { max-height: calc(100vh - 420px); min-height: 260px; overflow-y: auto; overflow-x: auto; border-radius: var(--radius-lg); }
 
 .draft-chat-feed {
   max-height: calc(100vh - 420px);
