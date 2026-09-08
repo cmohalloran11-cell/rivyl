@@ -359,9 +359,10 @@ GRADE_THRESHOLDS = [
 # player_id -> flat weekly points, same number regardless of scoring format
 # (the real difference between formats for a low-target bench player is
 # small enough not to be worth a second per-format number here).
-MANUAL_WEEKLY_PROJ_OVERRIDES = {
-    "13320": 6.2,  # Zachariah Branch (ATL WR) -- 2026-09-08, per user
-}
+# (empty for now -- Zachariah Branch's 6.2 override, added 2026-09-08, was
+# superseded the same day by the CBS Sports integration giving him a real
+# market-derived number instead: 5.63, no longer needing a manual call)
+MANUAL_WEEKLY_PROJ_OVERRIDES = {}
 
 PROJECTION_MODEL = {
     "QB": {"peak": 20.5, "decay": 137},
@@ -1508,6 +1509,108 @@ def fetch_underdog_nflszn_props():
     return fetch_underdog_nfl_props(stat_map=_UD_SEASON_STAT_FIELD_MAP)
 
 
+# ---------------------------------------------------------------------------
+# CBS Sports' own published fantasy projections -- a real analyst/model
+# projection (not a betting line), and unlike PrizePicks/Underdog it goes
+# genuinely deep: confirmed live (2026-09-08) reaching real WR3/4 rookies
+# with zero prop-book coverage at all (Makai Lemon, Zachariah Branch), not
+# just the top of the board. Public HTML, no login/paywall, no bot wall.
+#
+# The page exposes real counting stats per player (targets, receptions,
+# yards, TDs, ...), not just a pre-computed fantasy-point total -- pulling
+# those and running them through the same compute_offense_points() every
+# other source uses keeps this consistent with the rest of the pipeline and
+# correct for whatever scoring format the league actually uses, instead of
+# borrowing CBS's own PPR-only point total as-is.
+# ---------------------------------------------------------------------------
+CBS_SPORTS_PROJECTIONS_URL = "https://www.cbssports.com/fantasy/football/stats/{pos}/{year}/{period}/projections/ppr/"
+
+# Column index (after the leading "gp" games-played column, which is always
+# index 0 and never used) -> compute_offense_points() field, per position.
+# K/DST have a different layout that isn't worth mapping separately -- both
+# are already reasonably served by real market props (K) or the def-specific
+# scoring path (DST) elsewhere, so CBS is skipped for them.
+_CBS_COLUMN_MAP = {
+    "QB": {3: "pass_yards", 5: "pass_td", 6: "interceptions", 9: "rush_yards", 11: "rush_td", 12: "fumbles_lost"},
+    "RB": {2: "rush_yards", 4: "rush_td", 6: "rec", 7: "rec_yards", 10: "rec_td", 11: "fumbles_lost"},
+    "WR": {2: "rec", 3: "rec_yards", 6: "rec_td", 8: "rush_yards", 10: "rush_td", 11: "fumbles_lost"},
+    "TE": {2: "rec", 3: "rec_yards", 6: "rec_td", 7: "fumbles_lost"},
+}
+_CBS_ROW_RE = re.compile(r'<tr class="TableBase-bodyTr">(.*?)</tr>', re.DOTALL)
+_CBS_LONG_NAME_RE = re.compile(r'CellPlayerName--long.*?class="">(?:<a[^>]*>)?([^<]+)</a>', re.DOTALL)
+_CBS_CELL_RE = re.compile(r'TableBase-bodyTd[^"]*"\s*>\s*([^<]*?)\s*</td>')
+
+
+def fetch_cbs_sports_props(week=None):
+    """CBS Sports' own weekly (week=1..18) or season-long (week=None)
+    projections for QB/RB/WR/TE. Returns the same {player, position, field,
+    line} shape as the PrizePicks/Underdog fetchers, so it drops straight
+    into the same averaging/priority pipeline (never raises; [] on any
+    failure -- best-effort, same as the other two sources)."""
+    session = _market_session()
+    # CBS doesn't accept an obvious "season" token -- confirmed live
+    # (2026-09-08) that a guessed value like "season"/"regular"/"tp" all
+    # silently fall back to serving week-1-scale numbers with a 200 OK
+    # (no error to catch), which would have quietly halved every real
+    # season projection by averaging a season-scale number from the other
+    # sources with a same-shaped but week-scale one from this one. The
+    # real token, found from CBS's own page links rather than guessed, is
+    # "restofseason" -- gp=17 confirms it's the full season this early.
+    period = str(week) if week else "restofseason"
+    rows = []
+    for position, column_map in _CBS_COLUMN_MAP.items():
+        try:
+            url = CBS_SPORTS_PROJECTIONS_URL.format(pos=position, year=NFL_SEASON_YEAR, period=period)
+            resp = _market_get(session, url)
+            if resp is None or resp.status_code != 200:
+                continue
+            html = resp.text
+            for row_html in _CBS_ROW_RE.findall(html):
+                try:
+                    name_match = _CBS_LONG_NAME_RE.search(row_html)
+                    if not name_match:
+                        continue
+                    name = name_match.group(1).strip()
+                    if not name:
+                        continue
+                    cells = _CBS_CELL_RE.findall(row_html)
+                    for idx, field in column_map.items():
+                        if idx >= len(cells):
+                            continue
+                        raw = cells[idx].replace(",", "").strip()
+                        if not raw or raw in ("—", "-"):
+                            continue
+                        try:
+                            value = float(raw)
+                        except ValueError:
+                            continue
+                        rows.append({"player": name, "position": position, "field": field, "line": value})
+                except Exception:
+                    continue
+        except Exception:
+            continue
+    return rows
+
+
+def fetch_cbs_sports_season_props():
+    """CBS Sports' season-long projections page -- same parser, no week
+    number in the URL."""
+    return fetch_cbs_sports_props(week=None)
+
+
+def _current_nfl_week_estimate(db):
+    """Best-guess "current NFL week" for CBS Sports' weekly projections URL
+    -- unlike PrizePicks/Underdog (which just show whatever's live right
+    now, no week param needed), CBS needs to be told explicitly which week.
+    Reuses whatever this app's own leagues already believe the current week
+    is (the furthest-along current_week among leagues whose draft is
+    complete, since those are the ones actually tracking a real season)
+    rather than computing an independent calendar-based estimate. Defaults
+    to 1 if no league has started its season yet."""
+    row = db.execute("SELECT MAX(current_week) AS w FROM leagues WHERE draft_status = 'complete'").fetchone()
+    return row["w"] if row and row["w"] else 1
+
+
 SEASON_PROJECTIONS_TTL_SECONDS = 6 * 60 * 60
 
 # The fields that count as "the market actually has a read on this player,"
@@ -1610,7 +1713,12 @@ def _sync_projection_table(db, table, ttl_seconds, fetch_fns, force=False):
 def sync_market_projections(db, force=False):
     return _sync_projection_table(
         db, "market_projections", MARKET_PROJECTIONS_TTL_SECONDS,
-        [fetch_prizepicks_nfl_props, fetch_underdog_nfl_props], force,
+        [
+            fetch_prizepicks_nfl_props,
+            fetch_underdog_nfl_props,
+            lambda: fetch_cbs_sports_props(week=_current_nfl_week_estimate(db)),
+        ],
+        force,
     )
 
 
@@ -1621,7 +1729,8 @@ def sync_season_projections(db, force=False):
     weekly line, which is dead the moment that game kicks off)."""
     return _sync_projection_table(
         db, "season_projections", SEASON_PROJECTIONS_TTL_SECONDS,
-        [fetch_prizepicks_nflszn_props, fetch_underdog_nflszn_props], force,
+        [fetch_prizepicks_nflszn_props, fetch_underdog_nflszn_props, fetch_cbs_sports_season_props],
+        force,
     )
 
 
