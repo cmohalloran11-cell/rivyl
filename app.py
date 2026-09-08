@@ -351,7 +351,7 @@ GRADE_THRESHOLDS = [
 PROJECTION_MODEL = {
     "QB": {"peak": 20.5, "decay": 137},
     "RB": {"peak": 15.5, "decay": 74},
-    "WR": {"peak": 15.0, "decay": 82},
+    "WR": {"peak": 15.0, "decay": 130},
     "TE": {"peak": 10.0, "decay": 186},
     "K": {"peak": 8.0, "decay": 407},
     "DEF": {"peak": 8.5, "decay": 391},
@@ -5891,20 +5891,25 @@ def player_projection(position, rank, scoring, depth_chart_order=None):
     # regardless of talent, so knock the projection down hard on top of
     # whatever the rank curve already says.
     #
-    # WR is the one position where that "barely plays" assumption breaks:
-    # the league-wide base personnel package is 11 personnel (3 real
-    # receivers) on a clear majority of snaps, so a team's WR2/WR3 is a real
-    # every-down role, not a bench afterthought the way a backup QB/RB/TE
-    # is. Confirmed live (2026-09-08): the flat penalty had Makai Lemon
-    # (WR45 on the real consensus board, a rookie PHI WR3 with no market
-    # coverage yet to fall back on instead) projecting at 0.6 -- lower than
-    # players ranked hundreds of spots behind him at other positions, purely
-    # because of this multiplier, not his actual talent/role.
-    if isinstance(depth_chart_order, int) and depth_chart_order >= 2:
-        if position == "WR":
-            decay_factor *= 0.75 if depth_chart_order == 2 else 0.5
-        else:
-            decay_factor *= 0.35 if depth_chart_order == 2 else 0.12
+    # WR skips this penalty entirely, for two reasons confirmed live
+    # (2026-09-08 -- Makai Lemon and Zachariah Branch, both real rookie
+    # WR2/3s with no market coverage yet to fall back on instead):
+    #   1. The league-wide base personnel package is 11 personnel (3 real
+    #      receivers) on a clear majority of snaps, so a team's WR2/3 has a
+    #      real every-down role, not a bench afterthought the way a backup
+    #      QB/RB/TE is.
+    #   2. rank_half/rank_ppr/rank_std already come from a REAL analyst
+    #      consensus board that priced in exactly this depth-chart
+    #      question when it ranked someone "WR45" vs "WR85" -- stacking a
+    #      second, blunt depth_chart_order penalty on top double-counts the
+    #      same judgment the rank itself already reflects, the same shape
+    #      of bug as the double-counted-touchdown fix earlier this session.
+    # decay is calibrated wider than the other positions' for the same
+    # reason (130 vs the ~74-82 a non-WR skill position uses) -- a WR2/3's
+    # real weekly relevance falls off more gently across the bench/rookie
+    # range than the original curve assumed.
+    if position != "WR" and isinstance(depth_chart_order, int) and depth_chart_order >= 2:
+        decay_factor *= 0.35 if depth_chart_order == 2 else 0.12
     proj = cfg["peak"] * decay_factor
     if position in PPR_BONUS_POSITIONS:
         proj += PPR_PROJECTION_BONUS.get(scoring, 0.0) * decay_factor
