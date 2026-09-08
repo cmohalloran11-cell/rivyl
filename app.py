@@ -348,21 +348,24 @@ GRADE_THRESHOLDS = [
 # 1) / ln(2). Using one flat decay for every position (an earlier version of
 # this) crushed positions like QB/TE/K/DEF, whose useful players run much
 # deeper into the overall rank scale than RB/WR's do.
-# Manual weekly-projection overrides -- last resort, applied only to a
-# player with zero real market coverage (no PrizePicks/Underdog line at all
-# -- if either book prices them, that real number always wins over this).
-# Not a knob to lean on routinely: prefer fixing the real underlying cause,
-# the way the double-counted-TD and WR-curve-calibration fixes earlier this
-# session did. This exists for the rare case of a specific, named call on a
-# specific player the data can't back up yet (a depth-chart/beat-reporter
-# read the static preseason board and the model both predate). Keyed by
+# Manual weekly-projection overrides -- takes priority over even real
+# market/CBS data, unlike the model fallback (which only ever applies when
+# NO source has a real number). Not a knob to lean on routinely: prefer
+# fixing the real underlying cause, the way the double-counted-TD and
+# WR-curve-calibration fixes earlier this session did. This exists
+# specifically for the case none of the automated sources can capture on
+# their own -- fresh, spoken-for-in-the-moment context (an injury that
+# checked out fine in practice, a camp rumor about a snap-share timeshare)
+# that predates whatever the market/CBS/model last priced in. Keyed by
 # player_id -> flat weekly points, same number regardless of scoring format
 # (the real difference between formats for a low-target bench player is
 # small enough not to be worth a second per-format number here).
-# (empty for now -- Zachariah Branch's 6.2 override, added 2026-09-08, was
-# superseded the same day by the CBS Sports integration giving him a real
-# market-derived number instead: 5.63, no longer needing a manual call)
-MANUAL_WEEKLY_PROJ_OVERRIDES = {}
+MANUAL_WEEKLY_PROJ_OVERRIDES = {
+    "12527": 14.16,  # Ashton Jeanty (LV RB) -- 2026-09-08, per user: injury
+                      # scare resolved (healthy), but discounted off a
+                      # healthy ~19 for a real camp rumor that Mike Washington
+                      # will see a real snap share.
+}
 
 PROJECTION_MODEL = {
     "QB": {"peak": 20.5, "decay": 137},
@@ -6074,12 +6077,14 @@ def with_projections(rows, scoring, schedule_map=None, market_map=None):
             # "who should I start this week."
             row["proj"] = 0.0
             row["proj_source"] = None
+        elif has_player and row.get("player_id") in MANUAL_WEEKLY_PROJ_OVERRIDES:
+            # Ahead of even real market/CBS data -- see the override dict's
+            # own docstring for why.
+            row["proj"] = MANUAL_WEEKLY_PROJ_OVERRIDES[row["player_id"]]
+            row["proj_source"] = "model"
         elif market_o is not None:
             row["proj"] = compute_offense_points(market_o, scoring)
             row["proj_source"] = "market"
-        elif has_player and row.get("player_id") in MANUAL_WEEKLY_PROJ_OVERRIDES:
-            row["proj"] = MANUAL_WEEKLY_PROJ_OVERRIDES[row["player_id"]]
-            row["proj_source"] = "model"
         elif has_player:
             row["proj"] = player_projection(row.get("position"), row.get("player_rank"), scoring, row.get("depth_chart_order"))
             row["proj_source"] = "model"
