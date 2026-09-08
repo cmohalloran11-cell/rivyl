@@ -348,6 +348,21 @@ GRADE_THRESHOLDS = [
 # 1) / ln(2). Using one flat decay for every position (an earlier version of
 # this) crushed positions like QB/TE/K/DEF, whose useful players run much
 # deeper into the overall rank scale than RB/WR's do.
+# Manual weekly-projection overrides -- last resort, applied only to a
+# player with zero real market coverage (no PrizePicks/Underdog line at all
+# -- if either book prices them, that real number always wins over this).
+# Not a knob to lean on routinely: prefer fixing the real underlying cause,
+# the way the double-counted-TD and WR-curve-calibration fixes earlier this
+# session did. This exists for the rare case of a specific, named call on a
+# specific player the data can't back up yet (a depth-chart/beat-reporter
+# read the static preseason board and the model both predate). Keyed by
+# player_id -> flat weekly points, same number regardless of scoring format
+# (the real difference between formats for a low-target bench player is
+# small enough not to be worth a second per-format number here).
+MANUAL_WEEKLY_PROJ_OVERRIDES = {
+    "13320": 6.2,  # Zachariah Branch (ATL WR) -- 2026-09-08, per user
+}
+
 PROJECTION_MODEL = {
     "QB": {"peak": 20.5, "decay": 137},
     "RB": {"peak": 15.5, "decay": 74},
@@ -5953,6 +5968,9 @@ def with_projections(rows, scoring, schedule_map=None, market_map=None):
         elif market_o is not None:
             row["proj"] = compute_offense_points(market_o, scoring)
             row["proj_source"] = "market"
+        elif has_player and row.get("player_id") in MANUAL_WEEKLY_PROJ_OVERRIDES:
+            row["proj"] = MANUAL_WEEKLY_PROJ_OVERRIDES[row["player_id"]]
+            row["proj_source"] = "model"
         elif has_player:
             row["proj"] = player_projection(row.get("position"), row.get("player_rank"), scoring, row.get("depth_chart_order"))
             row["proj_source"] = "model"
