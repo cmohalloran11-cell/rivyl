@@ -100,11 +100,12 @@
       <thead><tr><th>Slot</th><th></th><th>Player</th><th>NFL Team</th><th>Opp</th><th class="num">Proj</th><th></th></tr></thead>
       <tbody id="starters-body">
         {% for p in starters %}
-          <tr class="{% if not p['player_name'] %}row-open{% endif %} {% if is_my_team and p['player_name'] %}lineup-row{% endif %} {% if is_my_team and not p['player_name'] %}slot-drop-target{% endif %}"
-              {% if is_my_team and p['player_name'] %}draggable="true" data-pick-id="{{ p['id'] }}"{% endif %}
+          {% set locked = p['nfl_team'] in locked_teams %}
+          <tr class="{% if not p['player_name'] %}row-open{% endif %} {% if is_my_team and p['player_name'] and not locked %}lineup-row{% endif %} {% if is_my_team and not p['player_name'] %}slot-drop-target{% endif %}"
+              {% if is_my_team and p['player_name'] and not locked %}draggable="true" data-pick-id="{{ p['id'] }}"{% endif %}
               {% if is_my_team and not p['player_name'] %}data-slot-code="{{ p['slot_code'] }}"{% endif %}>
             <td>
-              {% if is_my_team and p['player_name'] %}<span class="drag-handle">⠿</span>{% endif %}
+              {% if is_my_team and p['player_name'] and not locked %}<span class="drag-handle">⠿</span>{% endif %}
               <span class="badge badge-pos">{{ p['slot'] }}</span>
             </td>
             {% if p['player_name'] %}
@@ -114,6 +115,7 @@
                   {{ p['player_name'] }}
                   <span class="badge badge-pos badge-pos-{{ p['position'] }}">{{ p['position'] }}</span>
                   {% if p['injury_label'] %}<span class="badge badge-injury badge-injury-{{ p['injury_label'] }}">{{ p['injury_label'] }}</span>{% endif %}
+                  {% if locked %}<span class="badge badge-locked" title="Game underway or final -- lineup slot locked">🔒</span>{% endif %}
                 </span>
               </td>
               <td>{{ p['nfl_team'] or '—' }}</td>
@@ -135,14 +137,16 @@
       <thead><tr><th></th><th></th><th>Player</th><th>NFL Team</th><th>Opp</th><th class="num">Proj</th><th></th></tr></thead>
       <tbody id="bench-body">
         {% for p in bench %}
-          <tr class="{% if is_my_team %}lineup-row{% endif %}" {% if is_my_team %}draggable="true" data-pick-id="{{ p['id'] }}"{% endif %}>
-            <td>{% if is_my_team %}<span class="drag-handle">⠿</span>{% endif %}</td>
+          {% set locked = p['nfl_team'] in locked_teams %}
+          <tr class="{% if is_my_team and not locked %}lineup-row{% endif %}" {% if is_my_team and not locked %}draggable="true" data-pick-id="{{ p['id'] }}"{% endif %}>
+            <td>{% if is_my_team and not locked %}<span class="drag-handle">⠿</span>{% endif %}</td>
             <td>{{ macros.player_face(p) }}</td>
             <td class="player-name-cell">
               <span class="cell-flex">
                 {{ p['player_name'] }}
                 <span class="badge badge-pos badge-pos-{{ p['position'] }}">{{ p['position'] }}</span>
                 {% if p['injury_label'] %}<span class="badge badge-injury badge-injury-{{ p['injury_label'] }}">{{ p['injury_label'] }}</span>{% endif %}
+                {% if locked %}<span class="badge badge-locked" title="Game underway or final -- lineup slot locked">🔒</span>{% endif %}
               </span>
             </td>
             <td>{{ p['nfl_team'] or '—' }}</td>
@@ -160,5 +164,14 @@
   {% if is_my_team %}
     <script src="{{ url_for('static', filename='roster.js') }}"
             data-league-id="{{ league['id'] }}" data-team-id="{{ team['id'] }}"></script>
+  {% endif %}
+  {% if week_status == 'live' %}
+    <script>
+      // Games are actually in progress this week -- reload periodically so
+      // the live score/box-score-driven proj numbers on this page don't go
+      // stale while the tab just sits open. No point doing this once every
+      // game's final or before kickoff, so it's gated on week_status.
+      setTimeout(() => window.location.reload(), 30000);
+    </script>
   {% endif %}
 {% endblock %}

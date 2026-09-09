@@ -879,6 +879,11 @@ input:focus, select:focus, textarea:focus {
 .badge-win { background: var(--live-soft); color: var(--live); border-color: rgba(34, 197, 94, 0.25); }
 .badge-loss { background: var(--danger-soft); color: var(--danger); border-color: rgba(239, 68, 68, 0.25); }
 
+/* A player whose real game has already kicked off -- their starter/bench
+   slot is frozen (see get_locked_teams / lineup_swap's server-side check),
+   this is just the visible reason why the row stopped being draggable. */
+.badge-locked { background: rgba(148, 152, 184, 0.15); color: var(--text-faint); }
+
 /* ---- Tables (standings, rosters, players) ---- */
 
 .teams-table {

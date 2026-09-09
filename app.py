@@ -3048,9 +3048,13 @@ def team_detail(league_id, team_id):
 
     matchup = None
     live_score = None
+    week_status = "scheduled"
+    locked_teams = set()
     if league["draft_status"] == "complete":
         ensure_schedule(db, league_id)
         sync_week_scoring(db, league_id, league["current_week"])
+        week_status = get_week_status(db, league["current_week"])
+        locked_teams = get_locked_teams(db, league["current_week"])
         m = db.execute(
             """
             SELECT * FROM matchups
@@ -3108,6 +3112,8 @@ def team_detail(league_id, team_id):
         team_kits=TEAM_KITS,
         pending_claims_count=pending_claims_count,
         pending_trades_count=pending_trades_count,
+        week_status=week_status,
+        locked_teams=locked_teams,
     )
 
 
@@ -3200,6 +3206,18 @@ def lineup_swap(league_id, team_id):
     if pick_a is None:
         return jsonify({"error": "invalid_picks"}), 400
 
+    # A player's starter/bench slot freezes the moment their own real game
+    # kicks off -- same rule every real fantasy platform enforces, so you
+    # can't watch one player's game happen and then move them (or move
+    # someone else into/out of their spot) with the outcome already known.
+    ensure_live_games(db, league["current_week"])
+    locked_teams = get_locked_teams(db, league["current_week"])
+    if pick_a["nfl_team"] in locked_teams:
+        return jsonify({
+            "error": "locked",
+            "message": f"{pick_a['player_name']}'s game has already started -- their lineup slot is locked.",
+        }), 400
+
     # Dropping onto an empty slot (e.g. an unfilled FLEX) is a move, not a
     # swap -- there's no second player to trade places with.
     target_slot = request.form.get("target_slot")
@@ -3234,6 +3252,11 @@ def lineup_swap(league_id, team_id):
         ).fetchone()
         if pick_b is None:
             return jsonify({"error": "invalid_picks"}), 400
+        if pick_b["nfl_team"] in locked_teams:
+            return jsonify({
+                "error": "locked",
+                "message": f"{pick_b['player_name']}'s game has already started -- their lineup slot is locked.",
+            }), 400
 
         slot_a, slot_b = pick_a["lineup_slot"], pick_b["lineup_slot"]
         a_fits_b = pick_a["position"] in slot_eligible.get(slot_b, set())
@@ -5864,6 +5887,23 @@ def get_week_status(db, week):
     return "scheduled"
 
 
+def get_locked_teams(db, week):
+    """NFL team abbreviations whose game has already kicked off this week
+    (status != 'pre') -- every real fantasy platform freezes a player's
+    starter/bench assignment the moment their own real game starts, so you
+    can't watch one player bust in the early window and then bench them for
+    someone else before their own game kicks off. Caller should run
+    ensure_live_games(db, week) first so status is actually current."""
+    rows = db.execute(
+        "SELECT home_team, away_team FROM nfl_games WHERE week = ? AND status != 'pre'", (week,)
+    ).fetchall()
+    locked = set()
+    for r in rows:
+        locked.add(r["home_team"])
+        locked.add(r["away_team"])
+    return locked
+
+
 def set_optimal_lineup(db, league_id, team_id):
     """(Re)assigns the best possible starting lineup from a team's current
     roster -- highest CURRENT-WEEK projection first per required slot, then
@@ -5882,6 +5922,13 @@ def set_optimal_lineup(db, league_id, team_id):
     bye at all (fixed alongside this in with_projections, which now zeroes
     a bye player's projection instead of still crediting them their normal
     model estimate for a game they're not playing).
+
+    A player whose real game has already kicked off this week is left
+    exactly where they currently are (starter or bench) -- same lock
+    lineup_swap enforces for a manual drag-and-drop, so "Generate Best
+    Lineup" (or the AI auto-optimizer) can't do indirectly what a human
+    isn't allowed to do directly. Only the still-unlocked players and the
+    slots not already pinned by a locked starter get reshuffled.
     """
     league = db.execute("SELECT * FROM leagues WHERE id = ?", (league_id,)).fetchone()
     roster_config = get_roster_config(league)
@@ -5898,6 +5945,9 @@ def set_optimal_lineup(db, league_id, team_id):
     if not picks:
         return
 
+    ensure_live_games(db, league["current_week"])
+    locked_teams = get_locked_teams(db, league["current_week"])
+
     sync_market_projections(db)
     schedule_map = get_schedule_map(db, league["current_week"])
     market_map = get_market_projection_map(db)
@@ -5910,24 +5960,37 @@ def set_optimal_lineup(db, league_id, team_id):
         p["player_rank"] if p["player_rank"] is not None else 999999,
     ))
 
-    remaining = projected
     assignments = []
+    remaining = []
+    locked_slot_codes = set()
+    for p in projected:
+        current_slot = p.get("lineup_slot") or "BN"
+        if p.get("nfl_team") in locked_teams:
+            assignments.append((p["id"], current_slot))
+            if current_slot != "BN":
+                locked_slot_codes.add(current_slot)
+        else:
+            remaining.append(p)
 
     for pos, count in roster_starter_requirements(roster_config).items():
         for i in range(count):
+            slot_code = pos if count == 1 else f"{pos}{i + 1}"
+            if slot_code in locked_slot_codes:
+                continue
             idx = next((j for j, p in enumerate(remaining) if p["position"] == pos), None)
             if idx is not None:
                 pick = remaining.pop(idx)
-                slot_code = pos if count == 1 else f"{pos}{i + 1}"
                 assignments.append((pick["id"], slot_code))
 
     flex_n = roster_config.get("FLEX", 0)
     for i in range(flex_n):
+        slot_code = "FLEX" if flex_n == 1 else f"FLEX{i + 1}"
+        if slot_code in locked_slot_codes:
+            continue
         idx = next((j for j, p in enumerate(remaining) if p["position"] in FLEX_ELIGIBLE), None)
         if idx is None:
             break
         pick = remaining.pop(idx)
-        slot_code = "FLEX" if flex_n == 1 else f"FLEX{i + 1}"
         assignments.append((pick["id"], slot_code))
 
     for p in remaining:

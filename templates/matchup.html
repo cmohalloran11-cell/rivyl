@@ -197,4 +197,11 @@
       </div>
     {% endif %}
   {% endif %}
+  {% if week_status == 'live' %}
+    <script>
+      // Games are actually in progress -- reload periodically so the live
+      // score doesn't go stale while the tab just sits open.
+      setTimeout(() => window.location.reload(), 30000);
+    </script>
+  {% endif %}
 {% endblock %}
