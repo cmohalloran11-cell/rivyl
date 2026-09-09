@@ -181,8 +181,10 @@ button, .btn, .btn-small, input, select {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+  min-width: 0;
 }
 .sidebar-account form { display: contents; }
+.sidebar-account .btn { flex-shrink: 0; }
 
 .notif-bell {
   position: relative;
@@ -218,6 +220,15 @@ button, .btn, .btn-small, input, select {
   font-size: 0.83rem;
   font-weight: 600;
   padding-left: 4px;
+  /* A long username was overflowing the sidebar-account row (and dragging
+     the whole page into horizontal scroll with it) since flex children
+     default to a min-width that's their own content size -- confirmed
+     live. Truncates instead of pushing its siblings out of the sidebar. */
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ---- League nav (desktop sidebar list / mobile bottom bar) ---- */
@@ -259,6 +270,20 @@ button, .btn, .btn-small, input, select {
   border-radius: 0 3px 3px 0;
   background: var(--accent-gradient);
 }
+
+/* Splits the sidebar's 11 links into three short, scannable groups instead
+   of one long undifferentiated list -- hidden on the mobile horizontal
+   strip (see the max-width:760px override), where it would just eat scroll
+   space without the same benefit a vertical list gets from it. */
+.league-tab-group-label {
+  font-size: 0.68rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--text-faint);
+  padding: 14px 12px 4px;
+}
+.league-tab-group-label:first-child { padding-top: 4px; }
 
 @media (max-width: 760px) {
   .app-shell { flex-direction: column; }
@@ -304,6 +329,7 @@ button, .btn, .btn-small, input, select {
     z-index: 45;
   }
   .league-tabs::-webkit-scrollbar { display: none; }
+  .league-tab-group-label { display: none; }
   .league-tab {
     flex-direction: column;
     gap: 2px;
@@ -317,15 +343,13 @@ button, .btn, .btn-small, input, select {
   .league-tab-icon { font-size: 1.1rem; }
   body { padding-bottom: 70px; }
 
-  /* Fallback for any .teams-table not already sitting inside a
-     .table-scroll/.player-table-wrap container -- auto-layout tables grow
-     past width:100% when content demands it, so the table itself can just
-     host the horizontal scrollbar directly instead of forcing the page
-     body to pan sideways. !important on overflow-x only: the base
-     .teams-table rule below this media query in the cascade sets the
-     shorthand overflow:hidden (to clip rounded corners), which would
-     otherwise win on source order alone and silently defeat this. */
-  .teams-table { display: block; overflow-x: auto !important; -webkit-overflow-scrolling: touch; max-width: 100%; }
+  /* The base .teams-table rule (below this media query in the cascade)
+     already sets display:block + overflow-x:auto at every width -- this
+     mobile-only layer just adds momentum scrolling and re-asserts
+     overflow-x with !important so a plain (non-card-reflowed) table hosts
+     a touch-friendly scroll strip rather than the default table layout's
+     own scroll affordance. */
+  .teams-table { overflow-x: auto !important; -webkit-overflow-scrolling: touch; }
 
   /* The draft board's player list is the one table people reported not
      being able to use on a phone: reaching the Draft button meant scrolling
@@ -893,7 +917,27 @@ input:focus, select:focus, textarea:focus {
   background: var(--bg-elevated);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  overflow: hidden;
+  /* auto, not hidden -- a table with more columns than fit (a Standings
+     preview card is the one place this was caught live: not every page
+     wraps its table in .player-table-wrap, and overflow:hidden on a table
+     doesn't shrink its intrinsic content width, it just lets the table
+     render wider than its container while clipping nothing, pushing the
+     whole page into horizontal scroll). auto lets the table scroll within
+     its own rounded-corner box at any width, wrapped or not, instead of
+     silently blowing out the page -- the .player-table-wrap wrapper used
+     elsewhere still works fine stacked on top of this.
+     display:block is load-bearing here, not decoration: a <table> stays
+     display:table by default, and overflow-x on a display:table box is
+     silently a no-op in every engine (confirmed live -- computed overflowX
+     came back "visible" even with this rule in place until display:block
+     was added). The mobile-only override further down duplicates this same
+     display:block + overflow-x:auto pair for the same reason; this is just
+     that fix applied at every width instead of only under the mobile media
+     query. */
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
   box-shadow: var(--shadow-sm);
 }
 
@@ -1079,8 +1123,8 @@ input:focus, select:focus, textarea:focus {
   align-items: center;
   gap: 8px;
 }
-.invite-row { display: flex; gap: 8px; }
-.invite-row input { flex: 1; font-variant-numeric: tabular-nums; }
+.invite-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.invite-row input { flex: 1 1 240px; min-width: 0; font-variant-numeric: tabular-nums; }
 .draft-settings-form { max-width: 480px; }
 
 .randomize-order-check {

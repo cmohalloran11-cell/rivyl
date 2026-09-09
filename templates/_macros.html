@@ -2,23 +2,36 @@
 {# base.html already wraps {% block league_nav %} in <nav class="league-tabs">
    -- this macro must NOT add a second one, or the mobile fixed bottom-bar
    CSS (which targets .league-tabs directly) ends up applied to two nested
-   elements and collapses to a near-zero-height strip pinned off-screen. #}
+   elements and collapses to a near-zero-height strip pinned off-screen.
+
+   Grouped into MY TEAM / MARKET / LEAGUE with small labels so an 11-item
+   flat list reads as three short ones instead of one long one -- labels are
+   desktop-only (hidden on the mobile horizontal strip via CSS), where a
+   label would just eat scroll space in an already-tight bar without adding
+   the same scannability a vertical sidebar gets from it. #}
+  <div class="league-tab-group-label">My Team</div>
   <a class="league-tab {% if active == 'home' %}league-tab-active{% endif %}"
      href="{{ url_for('home_page', league_id=league['id']) }}"><span class="league-tab-icon">🏠</span> Home</a>
   {% if my_team_id %}
   <a class="league-tab {% if active == 'roster' %}league-tab-active{% endif %}"
      href="{{ url_for('team_detail', league_id=league['id'], team_id=my_team_id) }}"><span class="league-tab-icon">📋</span> Roster</a>
-  <a class="league-tab {% if active == 'insights' %}league-tab-active{% endif %}"
-     href="{{ url_for('insights_page', league_id=league['id']) }}"><span class="league-tab-icon">🧠</span> Insights</a>
   {% endif %}
   <a class="league-tab {% if active == 'matchup' %}league-tab-active{% endif %}"
      href="{{ url_for('matchup_detail', league_id=league['id']) }}"><span class="league-tab-icon">⚔️</span> Matchup</a>
+  {% if my_team_id %}
+  <a class="league-tab {% if active == 'insights' %}league-tab-active{% endif %}"
+     href="{{ url_for('insights_page', league_id=league['id']) }}"><span class="league-tab-icon">🧠</span> Insights</a>
+  {% endif %}
+
+  <div class="league-tab-group-label">Market</div>
   <a class="league-tab {% if active == 'players' %}league-tab-active{% endif %}"
      href="{{ url_for('players_list', league_id=league['id']) }}"><span class="league-tab-icon">👥</span> Players</a>
   <a class="league-tab {% if active == 'waivers' %}league-tab-active{% endif %}"
      href="{{ url_for('waivers_page', league_id=league['id']) }}"><span class="league-tab-icon">📝</span> Waivers</a>
   <a class="league-tab {% if active == 'trades' %}league-tab-active{% endif %}"
      href="{{ url_for('trades_page', league_id=league['id']) }}"><span class="league-tab-icon">🤝</span> Trades</a>
+
+  <div class="league-tab-group-label">League</div>
   <a class="league-tab {% if active == 'standings' %}league-tab-active{% endif %}"
      href="{{ url_for('standings_page', league_id=league['id']) }}"><span class="league-tab-icon">📊</span> Standings</a>
   <a class="league-tab {% if active == 'schedule' %}league-tab-active{% endif %}"
