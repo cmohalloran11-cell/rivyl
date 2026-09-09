@@ -6,7 +6,9 @@ import random
 import re
 import string
 import time
+import xml.etree.ElementTree as ET
 from collections import defaultdict
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import psycopg2
@@ -630,6 +632,21 @@ def init_db():
             PRIMARY KEY (week, player_id)
         );
 
+        CREATE TABLE IF NOT EXISTS player_news (
+            id SERIAL PRIMARY KEY,
+            player_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+            source TEXT NOT NULL,
+            source_id TEXT NOT NULL,
+            headline TEXT NOT NULL,
+            body TEXT,
+            url TEXT,
+            published_at TEXT,
+            fetched_at DOUBLE PRECISION NOT NULL,
+            UNIQUE (source, source_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_player_news_player ON player_news (player_id, published_at DESC);
+
         CREATE TABLE IF NOT EXISTS trades (
             id SERIAL PRIMARY KEY,
             league_id INTEGER NOT NULL REFERENCES leagues(id) ON DELETE CASCADE,
@@ -1155,6 +1172,199 @@ def build_player_name_index(db):
     for r in db.execute("SELECT id, full_name FROM players WHERE position != 'DEF'"):
         idx[normalize_player_name(r["full_name"])] = r["id"]
     return idx
+
+
+# ---------------------------------------------------------------------------
+# Player news -- real beat-writer/injury-report items from public sources,
+# shown on each player's card. No source here hands us its own player id, so
+# every item is attributed the same way the CBS Sports projections above
+# are: by running its text through normalize_player_name() and matching
+# against build_player_name_index(). Best-effort per source, same as the
+# market pullers -- one source being down, empty, or reshaped never breaks
+# another or raises past this module.
+# ---------------------------------------------------------------------------
+NEWS_REFRESH_SECONDS = 900  # 15 min -- beat-writer/injury items move far
+                            # slower than live scores; nowhere near
+                            # GAME_SCORE_REFRESH_SECONDS is needed.
+NEWS_ITEM_MAX_AGE_DAYS = 21  # prune old items so a player's card doesn't
+                             # accumulate a full season of stale headlines.
+
+ROTOWIRE_NFL_RSS_URL = "https://www.rotowire.com/rss/news.php?sport=NFL"
+ESPN_NEWS_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/news"
+
+# RotoWire's RSS pubDate isn't valid RFC 822 -- confirmed live (2026-09-08):
+# it's a 12-hour clock with an AM/PM marker and a named US zone abbreviation
+# ("Tue, 08 Sep 2026 4:54:00 PM PDT"), which email.utils.parsedate_to_datetime
+# silently mis-parses (it reads "4:54:00 PM" as 04:54, dropping the PM and
+# the zone entirely -- a systematic 12-hour error on every afternoon/evening
+# item). Parsed by hand instead, with a fixed UTC-offset table for the zone
+# abbreviation, so published_at sorts and prunes correctly everywhere.
+_US_TZ_OFFSETS = {
+    "EST": -5, "EDT": -4,
+    "CST": -6, "CDT": -5,
+    "MST": -7, "MDT": -6,
+    "PST": -8, "PDT": -7,
+}
+
+
+def _parse_rotowire_pubdate(raw):
+    if not raw:
+        return None
+    try:
+        head, zone = raw.strip().rsplit(" ", 1)
+        offset = _US_TZ_OFFSETS.get(zone)
+        if offset is None:
+            return None
+        dt = datetime.strptime(head.strip(), "%a, %d %b %Y %I:%M:%S %p")
+        dt = dt - timedelta(hours=offset)  # normalize local time to UTC
+        return dt.replace(tzinfo=timezone.utc).isoformat()
+    except (ValueError, TypeError):
+        return None
+
+
+def _parse_espn_pubdate(raw):
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).isoformat()
+    except (ValueError, TypeError):
+        return None
+
+
+def _fetch_rotowire_news():
+    """RotoWire's own public RSS feed -- no login, no key. Every item's
+    title is "Player Name: short blurb", a clean, cheap name hint that's
+    tried before any source falls back to the generic whole-text scan."""
+    try:
+        resp = requests.get(
+            ROTOWIRE_NFL_RSS_URL,
+            headers={"User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                                     "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        root = ET.fromstring(resp.content)
+    except Exception:
+        return []
+
+    items = []
+    for item in root.iter("item"):
+        guid = (item.findtext("guid") or "").strip()
+        title = (item.findtext("title") or "").strip()
+        if not guid or not title:
+            continue
+        name_hint, _, blurb = title.partition(":")
+        description = (item.findtext("description") or "").strip()
+        description = description.split("Visit RotoWire.com")[0].strip()  # boilerplate footer
+        items.append({
+            "source_id": guid,
+            "headline": title,
+            "body": description or blurb.strip(),
+            "url": (item.findtext("link") or "").strip() or None,
+            "published_at": _parse_rotowire_pubdate(item.findtext("pubDate")),
+            "name_hint": name_hint.strip(),
+        })
+    return items
+
+
+def _fetch_espn_news():
+    """ESPN's public news feed. Its JSON doesn't reliably tag an article to
+    one athlete in a shape worth depending on, so these go through the same
+    generic headline/description name scan as any other unstructured
+    source (see _match_news_player_id)."""
+    try:
+        resp = requests.get(ESPN_NEWS_URL, params={"limit": 40}, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception:
+        return []
+
+    items = []
+    for a in data.get("articles", []):
+        headline = (a.get("headline") or "").strip()
+        article_id = str(a.get("id") or "")
+        if not article_id or not headline:
+            continue
+        web = (a.get("links") or {}).get("web") or {}
+        items.append({
+            "source_id": article_id,
+            "headline": headline,
+            "body": (a.get("description") or "").strip(),
+            "url": web.get("href") if isinstance(web, dict) else None,
+            "published_at": _parse_espn_pubdate(a.get("published") or a.get("lastModified")),
+            "name_hint": None,
+        })
+    return items
+
+
+# (source label, fetcher) -- add another entry here to bring in a new source;
+# nothing else about the pipeline needs to know it exists.
+NEWS_SOURCES = [
+    ("RotoWire", _fetch_rotowire_news),
+    ("ESPN", _fetch_espn_news),
+]
+
+
+def _match_news_player_id(item, name_index):
+    if item.get("name_hint"):
+        pid = name_index.get(normalize_player_name(item["name_hint"]))
+        if pid:
+            return pid
+    haystack = " " + normalize_player_name(item["headline"] + " " + (item.get("body") or "")) + " "
+    for key, pid in name_index.items():
+        if f" {key} " in haystack:
+            return pid
+    return None
+
+
+def refresh_player_news(db, force=False):
+    """Pull every configured news source and attribute each item to a
+    player_id by name match. Staleness check mirrors ensure_live_games: read
+    the table's own newest fetched_at instead of tracking a separate
+    cron/timestamp row."""
+    if not force:
+        newest = db.execute("SELECT MAX(fetched_at) AS v FROM player_news").fetchone()["v"]
+        if newest is not None and time.time() - newest < NEWS_REFRESH_SECONDS:
+            return
+
+    name_index = build_player_name_index(db)
+    now = time.time()
+    for source, fetcher in NEWS_SOURCES:
+        for item in fetcher():
+            player_id = _match_news_player_id(item, name_index)
+            if not player_id:
+                continue
+            db.execute(
+                """
+                INSERT INTO player_news (player_id, source, source_id, headline, body, url, published_at, fetched_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (source, source_id) DO NOTHING
+                """,
+                (player_id, source, item["source_id"], item["headline"], item.get("body"),
+                 item.get("url"), item.get("published_at"), now),
+            )
+
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=NEWS_ITEM_MAX_AGE_DAYS)).isoformat()
+    db.execute("DELETE FROM player_news WHERE published_at IS NOT NULL AND published_at < ?", (cutoff,))
+    db.commit()
+
+
+def _format_news_age(iso_str):
+    if not iso_str:
+        return None
+    try:
+        dt = datetime.fromisoformat(iso_str)
+    except ValueError:
+        return None
+    now = datetime.now(dt.tzinfo) if dt.tzinfo else datetime.utcnow()
+    seconds = max(0, (now - dt).total_seconds())
+    if seconds < 3600:
+        return f"{max(1, int(seconds // 60))}m ago"
+    if seconds < 86400:
+        return f"{int(seconds // 3600)}h ago"
+    if seconds < NEWS_ITEM_MAX_AGE_DAYS * 86400:
+        return f"{int(seconds // 86400)}d ago"
+    return f"{dt.strftime('%b')} {dt.day}"
 
 
 # ---------------------------------------------------------------------------
@@ -4253,6 +4463,22 @@ def player_profile(league_id, player_id):
         # page, not a fabricated scouting blurb.
         outlook.insert(0, player["notes"])
 
+    refresh_player_news(db)
+    news_rows = db.execute(
+        "SELECT * FROM player_news WHERE player_id = ? ORDER BY published_at DESC NULLS LAST, id DESC LIMIT 10",
+        (player_id,),
+    ).fetchall()
+    news = [
+        {
+            "source": r["source"],
+            "headline": r["headline"],
+            "body": r["body"],
+            "url": r["url"],
+            "age": _format_news_age(r["published_at"]),
+        }
+        for r in news_rows
+    ]
+
     return render_template(
         "player_profile.html",
         league=league,
@@ -4260,6 +4486,7 @@ def player_profile(league_id, player_id):
         owner_team=owner_team,
         my_team_id=my_team_id,
         opponent=opponent,
+        news=news,
         injury_label=INJURY_LABELS.get(player["injury_status"]),
         face_url=player_face_url(player["id"], player["position"], player["nfl_team"]),
         initials=player_initials(player["full_name"]),
