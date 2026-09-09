@@ -115,6 +115,7 @@
                   {{ p['player_name'] }}
                   <span class="badge badge-pos badge-pos-{{ p['position'] }}">{{ p['position'] }}</span>
                   {% if p['injury_label'] %}<span class="badge badge-injury badge-injury-{{ p['injury_label'] }}">{{ p['injury_label'] }}</span>{% endif %}
+                  {% if p['news'] %}<span class="badge badge-news" title="{{ p['news']['source'] }} &middot; {{ p['news']['headline'] }}">📰 {{ p['news']['age'] }}</span>{% endif %}
                   {% if locked %}<span class="badge badge-locked" title="Game underway or final -- lineup slot locked">🔒</span>{% endif %}
                 </span>
               </td>
@@ -146,6 +147,7 @@
                 {{ p['player_name'] }}
                 <span class="badge badge-pos badge-pos-{{ p['position'] }}">{{ p['position'] }}</span>
                 {% if p['injury_label'] %}<span class="badge badge-injury badge-injury-{{ p['injury_label'] }}">{{ p['injury_label'] }}</span>{% endif %}
+                {% if p['news'] %}<span class="badge badge-news" title="{{ p['news']['source'] }} &middot; {{ p['news']['headline'] }}">📰 {{ p['news']['age'] }}</span>{% endif %}
                 {% if locked %}<span class="badge badge-locked" title="Game underway or final -- lineup slot locked">🔒</span>{% endif %}
               </span>
             </td>

@@ -47,6 +47,7 @@
                   {{ row['player']['full_name'] }}
                   <span class="badge badge-pos badge-pos-{{ row['player']['position'] }}">{{ row['player']['position'] }}</span>
                   {% if row['injury_label'] %}<span class="badge badge-injury badge-injury-{{ row['injury_label'] }}">{{ row['injury_label'] }}</span>{% endif %}
+                  {% if row['news'] %}<span class="badge badge-news" title="{{ row['news']['source'] }} &middot; {{ row['news']['headline'] }}">📰 {{ row['news']['age'] }}</span>{% endif %}
                 </a>
               </td>
               <td>{{ row['player']['nfl_team'] or '—' }}</td>

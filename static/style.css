@@ -735,6 +735,11 @@ button:disabled, .btn:disabled { opacity: 0.5; cursor: not-allowed; transform: n
 a.news-item-headline:hover { color: var(--accent-strong); text-decoration: underline; }
 .news-item-body { margin: 4px 0 0; color: var(--text-dim); font-size: 0.85rem; line-height: 1.5; }
 
+/* Small news-indicator badge on roster/players-list rows (see
+   get_latest_news_map) -- hover for the actual headline via the title
+   attribute, click through to the player's card for the full list. */
+.badge-news { background: rgba(96, 165, 250, 0.14); color: #7dabf5; font-weight: 700; white-space: nowrap; }
+
 .form { display: flex; flex-direction: column; gap: 14px; }
 .form-row { display: flex; gap: 14px; }
 .form-row label { flex: 1; }

@@ -1367,6 +1367,34 @@ def _format_news_age(iso_str):
     return f"{dt.strftime('%b')} {dt.day}"
 
 
+NEWS_INDICATOR_MAX_AGE_DAYS = 3  # roster/players-list rows only flag genuinely
+                                  # recent news with a small badge; the full
+                                  # history still lives on the player's own card.
+
+
+def get_latest_news_map(db):
+    """Most recent news item per player_id within NEWS_INDICATOR_MAX_AGE_DAYS
+    -- powers the small news badge on roster/players-list rows. One
+    unfiltered query rather than a per-row lookup or a dynamic IN(...) list:
+    matched RotoWire+ESPN volume league-wide is small enough (a few dozen
+    items a day) that pulling everything recent and dict-keying by
+    player_id is simpler and just as cheap."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=NEWS_INDICATOR_MAX_AGE_DAYS)).isoformat()
+    rows = db.execute(
+        """
+        SELECT DISTINCT ON (player_id) player_id, source, headline, published_at
+        FROM player_news
+        WHERE published_at IS NOT NULL AND published_at >= ?
+        ORDER BY player_id, published_at DESC
+        """,
+        (cutoff,),
+    ).fetchall()
+    return {
+        r["player_id"]: {"source": r["source"], "headline": r["headline"], "age": _format_news_age(r["published_at"])}
+        for r in rows
+    }
+
+
 # ---------------------------------------------------------------------------
 # Market-based projections -- real player prop lines (pass yards, receptions,
 # TDs by type, etc.) from public pick'em boards, where the line is the
@@ -3255,6 +3283,10 @@ def team_detail(league_id, team_id):
         market_map = get_market_projection_map(db)
         starters = with_projections(starters, league["scoring"], schedule_map, market_map)
         bench = with_projections(bench, league["scoring"], schedule_map, market_map)
+        refresh_player_news(db)
+        news_map = get_latest_news_map(db)
+        for row in starters + bench:
+            row["news"] = news_map.get(row.get("player_id"))
 
     matchup = None
     live_score = None
@@ -4085,6 +4117,8 @@ def players_list(league_id):
     # Rank/pos-rank/proj all come from the same live, market-derived ordering
     # now -- no separate rank_col lookup or player_projection call needed here.
     live_ranks = compute_live_rankings(db, league["scoring"])
+    refresh_player_news(db)
+    news_map = get_latest_news_map(db)
 
     rows = []
     for p in db.execute(query, params).fetchall():
@@ -4106,6 +4140,7 @@ def players_list(league_id):
         player["pos_rank"] = live["pos_rank"] if live else None
         rows.append({
             "player": player,
+            "news": news_map.get(p["id"]),
             "owner_team": teams_by_id.get(owned.get(p["id"])),
             "proj": live["proj"] if live else None,
             "injury_label": INJURY_LABELS.get(p["injury_status"]),
