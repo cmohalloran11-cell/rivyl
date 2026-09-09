@@ -646,6 +646,25 @@ def init_db():
             UNIQUE (source, source_id)
         );
 
+        CREATE TABLE IF NOT EXISTS espn_athlete_ids (
+            player_id TEXT PRIMARY KEY REFERENCES players(id) ON DELETE CASCADE,
+            espn_id TEXT,
+            resolved_at DOUBLE PRECISION NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS player_prior_gamelog (
+            player_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+            season INTEGER NOT NULL,
+            week INTEGER NOT NULL,
+            is_postseason INTEGER NOT NULL DEFAULT 0,
+            opponent TEXT,
+            game_result TEXT,
+            score TEXT,
+            stat_line TEXT,
+            cached_at DOUBLE PRECISION NOT NULL,
+            PRIMARY KEY (player_id, season, week, is_postseason)
+        );
+
         CREATE INDEX IF NOT EXISTS idx_player_news_player ON player_news (player_id, published_at DESC);
 
         CREATE TABLE IF NOT EXISTS trades (
@@ -1500,6 +1519,199 @@ def get_latest_news_map(db):
         r["player_id"]: {"source": r["source"], "headline": r["headline"], "age": _format_news_age(r["published_at"])}
         for r in rows
     }
+
+
+# ---------------------------------------------------------------------------
+# Prior-season game log -- the player card's own player_week_stats table
+# only ever covers the current season (PRIMARY KEY (week, player_id), no
+# season column), so "last year" has to come from somewhere else. ESPN's
+# public per-athlete gamelog API covers it, but keys off ESPN's own numeric
+# athlete id, which this app doesn't have (Sleeper ids are used everywhere
+# else) -- so a player is first resolved to an ESPN id via ESPN's site
+# search (cached forever in espn_athlete_ids, since the mapping never
+# changes), then that id's prior-season box scores are fetched once and
+# cached in player_prior_gamelog (also forever -- a season that's over
+# doesn't get new games). Fantasy points are computed at read time from the
+# cached raw stats using compute_offense_points(), so a league's own
+# scoring format (Standard/Half PPR/Full PPR) is always respected instead
+# of baking in whatever format was current when the row was first cached.
+# ---------------------------------------------------------------------------
+PRIOR_SEASON_YEAR = NFL_SEASON_YEAR - 1
+
+ESPN_SEARCH_URL = "https://site.web.api.espn.com/apis/search/v2"
+ESPN_GAMELOG_URL = "https://site.web.api.espn.com/apis/common/v3/sports/football/nfl/athletes/{athlete_id}/gamelog"
+_ESPN_SEARCH_ID_RE = re.compile(r"/id/(\d+)/")
+# Only matters for a negative ("not found") lookup -- a resolved id is
+# permanent and never needs re-checking. A rookie searched on draft day
+# might not be in ESPN's index yet but shows up within a season, so a
+# no-find is worth retrying occasionally rather than caching forever.
+ESPN_ATHLETE_ID_RETRY_SECONDS = 60 * 60 * 24 * 30
+
+# ESPN's per-position gamelog stat name -> this app's internal
+# compute_offense_points() field. Kicking uses combined "made-attempted"
+# strings instead (handled separately, not through this map).
+_ESPN_GAMELOG_FIELD_MAP = {
+    "passingYards": "pass_yards",
+    "passingTouchdowns": "pass_td",
+    "interceptions": "int",
+    "rushingYards": "rush_yards",
+    "rushingTouchdowns": "rush_td",
+    "receptions": "rec",
+    "receivingYards": "rec_yards",
+    "receivingTouchdowns": "rec_td",
+    "fumblesLost": "fumbles_lost",
+}
+
+
+def _espn_search_athlete_id(full_name):
+    try:
+        resp = requests.get(ESPN_SEARCH_URL, params={"query": full_name, "limit": 3}, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception:
+        return None
+    for group in data.get("results", []):
+        if group.get("type") != "player":
+            continue
+        for c in group.get("contents", []):
+            if c.get("description") != "NFL":  # search spans every sport ESPN covers
+                continue
+            web = (c.get("link") or {}).get("web", "")
+            m = _ESPN_SEARCH_ID_RE.search(web)
+            if m:
+                return m.group(1)
+    return None
+
+
+def get_espn_athlete_id(db, player_id, full_name):
+    row = db.execute(
+        "SELECT espn_id, resolved_at FROM espn_athlete_ids WHERE player_id = ?", (player_id,)
+    ).fetchone()
+    if row is not None:
+        if row["espn_id"] or time.time() - row["resolved_at"] < ESPN_ATHLETE_ID_RETRY_SECONDS:
+            return row["espn_id"]
+
+    espn_id = _espn_search_athlete_id(full_name)
+    db.execute(
+        """
+        INSERT INTO espn_athlete_ids (player_id, espn_id, resolved_at) VALUES (?, ?, ?)
+        ON CONFLICT (player_id) DO UPDATE SET espn_id = EXCLUDED.espn_id, resolved_at = EXCLUDED.resolved_at
+        """,
+        (player_id, espn_id, time.time()),
+    )
+    db.commit()
+    return espn_id
+
+
+def _parse_espn_kick_pair(value):
+    """ESPN reports kicking as a single "made-attempted" string -- returns
+    just the made count, which is all compute_offense_points needs."""
+    if not value or "-" not in value:
+        return 0.0
+    made, _, _attempted = value.partition("-")
+    return to_float(made)
+
+
+def fetch_espn_prior_season_gamelog(espn_id, position, season):
+    """One player's real box scores for `season`, in this app's own
+    internal stat-field shape (unscored -- caller runs it through
+    compute_offense_points with the league's own scoring format)."""
+    try:
+        resp = requests.get(ESPN_GAMELOG_URL.format(athlete_id=espn_id), params={"season": season}, timeout=20)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception:
+        return []
+
+    names = data.get("names") or []
+    events_meta = data.get("events") or {}
+    if not names or not isinstance(events_meta, dict):
+        return []  # e.g. didn't play that season at all
+
+    rows = []
+    for season_type in data.get("seasonTypes", []):
+        is_post = "post" in (season_type.get("displayName") or "").lower()
+        for category in season_type.get("categories", []):
+            for ev in category.get("events", []):
+                meta = events_meta.get(ev.get("eventId"))
+                stats = ev.get("stats") or []
+                if not meta or not stats or not meta.get("week"):
+                    continue
+                stat_map = dict(zip(names, stats))
+
+                o = default_offense_stat()
+                if position == "K":
+                    o["fg_made"] = _parse_espn_kick_pair(stat_map.get("fieldGoalsMade-fieldGoalAttempts"))
+                    o["xp_made"] = _parse_espn_kick_pair(stat_map.get("extraPointsMade-extraPointAttempts"))
+                else:
+                    for espn_key, field in _ESPN_GAMELOG_FIELD_MAP.items():
+                        if espn_key in stat_map:
+                            o[field] = to_float(stat_map[espn_key])
+
+                opponent = (meta.get("opponent") or {}).get("abbreviation")
+                rows.append({
+                    "week": meta["week"],
+                    "opponent": (f"{meta.get('atVs', 'vs')} {opponent}") if opponent else None,
+                    "result": meta.get("gameResult"),
+                    "score": meta.get("score"),
+                    "is_postseason": is_post,
+                    "stat": o,
+                })
+    return rows
+
+
+def get_prior_season_game_log(db, player, scoring):
+    if player["position"] == "DEF":
+        return []  # team defense has no individual-athlete gamelog on ESPN
+
+    cached = db.execute(
+        "SELECT * FROM player_prior_gamelog WHERE player_id = ? AND season = ? ORDER BY is_postseason, week",
+        (player["id"], PRIOR_SEASON_YEAR),
+    ).fetchall()
+
+    if not cached:
+        espn_id = get_espn_athlete_id(db, player["id"], player["full_name"])
+        if not espn_id:
+            return []
+        fetched = fetch_espn_prior_season_gamelog(espn_id, player["position"], PRIOR_SEASON_YEAR)
+        if not fetched:
+            return []
+        now = time.time()
+        for r in fetched:
+            db.execute(
+                """
+                INSERT INTO player_prior_gamelog
+                    (player_id, season, week, is_postseason, opponent, game_result, score, stat_line, cached_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (player_id, season, week, is_postseason) DO UPDATE SET
+                    opponent = EXCLUDED.opponent, game_result = EXCLUDED.game_result,
+                    score = EXCLUDED.score, stat_line = EXCLUDED.stat_line, cached_at = EXCLUDED.cached_at
+                """,
+                (player["id"], PRIOR_SEASON_YEAR, r["week"], 1 if r["is_postseason"] else 0,
+                 r["opponent"], r["result"], r["score"], json.dumps(r["stat"]), now),
+            )
+        db.commit()
+        cached = db.execute(
+            "SELECT * FROM player_prior_gamelog WHERE player_id = ? AND season = ? ORDER BY is_postseason, week",
+            (player["id"], PRIOR_SEASON_YEAR),
+        ).fetchall()
+
+    out = []
+    for r in cached:
+        try:
+            o = json.loads(r["stat_line"]) if r["stat_line"] else default_offense_stat()
+        except (TypeError, ValueError):
+            o = default_offense_stat()
+        out.append({
+            "week": r["week"],
+            "opponent": r["opponent"],
+            "points": round(compute_offense_points(o, scoring), 1),
+            "result": r["game_result"],
+            "score": r["score"],
+            "is_postseason": bool(r["is_postseason"]),
+            "summary": summarize_stat_line(r["stat_line"], player["position"]),
+        })
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -4638,6 +4850,8 @@ def player_profile(league_id, player_id):
         for r in news_rows
     ]
 
+    last_year_game_log = get_prior_season_game_log(db, player, league["scoring"])
+
     return render_template(
         "player_profile.html",
         league=league,
@@ -4646,6 +4860,8 @@ def player_profile(league_id, player_id):
         my_team_id=my_team_id,
         opponent=opponent,
         news=news,
+        prior_season_year=PRIOR_SEASON_YEAR,
+        last_year_game_log=last_year_game_log,
         injury_label=INJURY_LABELS.get(player["injury_status"]),
         face_url=player_face_url(player["id"], player["position"], player["nfl_team"]),
         initials=player_initials(player["full_name"]),

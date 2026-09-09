@@ -124,7 +124,7 @@
                 <td>{{ macros.player_face(p) }}</td>
                 <td class="player-name-cell">
                   <span class="cell-flex">
-                    {{ p['player_name'] }}
+                    <a class="player-name-link" href="{{ url_for('player_profile', league_id=league['id'], player_id=p['player_id']) }}">{{ p['player_name'] }}</a>
                     <span class="badge badge-pos badge-pos-{{ p['position'] }}">{{ p['position'] }}</span>
                     {% if p['injury_label'] %}<span class="badge badge-injury badge-injury-{{ p['injury_label'] }}">{{ p['injury_label'] }}</span>{% endif %}
                   </span>
@@ -152,7 +152,7 @@
                     <td>{{ macros.player_face(p) }}</td>
                     <td class="player-name-cell">
                       <span class="cell-flex">
-                        {{ p['player_name'] }}
+                        <a class="player-name-link" href="{{ url_for('player_profile', league_id=league['id'], player_id=p['player_id']) }}">{{ p['player_name'] }}</a>
                         <span class="badge badge-pos badge-pos-{{ p['position'] }}">{{ p['position'] }}</span>
                         {% if p['injury_label'] %}<span class="badge badge-injury badge-injury-{{ p['injury_label'] }}">{{ p['injury_label'] }}</span>{% endif %}
                       </span>
@@ -179,7 +179,7 @@
                     <td>{{ macros.player_face(p) }}</td>
                     <td class="player-name-cell">
                       <span class="cell-flex">
-                        {{ p['player_name'] }}
+                        <a class="player-name-link" href="{{ url_for('player_profile', league_id=league['id'], player_id=p['player_id']) }}">{{ p['player_name'] }}</a>
                         <span class="badge badge-pos badge-pos-{{ p['position'] }}">{{ p['position'] }}</span>
                         {% if p['injury_label'] %}<span class="badge badge-injury badge-injury-{{ p['injury_label'] }}">{{ p['injury_label'] }}</span>{% endif %}
                       </span>

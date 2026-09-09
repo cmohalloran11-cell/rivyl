@@ -132,4 +132,34 @@
       <p>Game-by-game scoring shows up here once {{ player['full_name'] }} takes the field this season.</p>
     </div>
   {% endif %}
+
+  {% if last_year_game_log %}
+    <h2 class="section-title">{{ prior_season_year }} Game Log</h2>
+    <table class="teams-table">
+      <thead>
+        <tr>
+          <th>Week</th>
+          <th>Opponent</th>
+          <th class="num">Points &middot; {{ league['scoring'] }}</th>
+          <th>Result</th>
+          <th>Stat Line</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for g in last_year_game_log %}
+          <tr>
+            <td class="player-name-cell">{{ g['week'] }}{% if g['is_postseason'] %} <span class="hint" style="margin:0;">(Playoffs)</span>{% endif %}</td>
+            <td>{{ g['opponent'] or '—' }}</td>
+            <td class="num stat-num">{{ '%.1f'|format(g['points']) }}</td>
+            <td>
+              {% if g['result'] == 'W' %}<span class="badge badge-win">W{% if g['score'] %} {{ g['score'] }}{% endif %}</span>
+              {% elif g['result'] == 'L' %}<span class="badge badge-loss">L{% if g['score'] %} {{ g['score'] }}{% endif %}</span>
+              {% else %}<span class="badge badge-full">{{ g['score'] or '—' }}</span>{% endif %}
+            </td>
+            <td class="hint" style="margin:0;">{{ g['summary'] or '—' }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% endif %}
 {% endblock %}
