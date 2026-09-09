@@ -642,6 +642,7 @@ def init_db():
             url TEXT,
             published_at TEXT,
             fetched_at DOUBLE PRECISION NOT NULL,
+            is_injury INTEGER NOT NULL DEFAULT 0,
             UNIQUE (source, source_id)
         );
 
@@ -765,6 +766,9 @@ def init_db():
         "market_projections": {
             "fumbles_lost": "ALTER TABLE market_projections ADD COLUMN fumbles_lost REAL NOT NULL DEFAULT 0",
             "xp_made": "ALTER TABLE market_projections ADD COLUMN xp_made REAL NOT NULL DEFAULT 0",
+        },
+        "player_news": {
+            "is_injury": "ALTER TABLE player_news ADD COLUMN is_injury INTEGER NOT NULL DEFAULT 0",
         },
     }
     for table, columns in table_migrations.items():
@@ -1191,6 +1195,31 @@ NEWS_ITEM_MAX_AGE_DAYS = 21  # prune old items so a player's card doesn't
 
 ROTOWIRE_NFL_RSS_URL = "https://www.rotowire.com/rss/news.php?sport=NFL"
 ESPN_NEWS_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/news"
+# Not the same host as ESPN_NEWS_URL -- confirmed live (2026-09-08) this is a
+# real, structured, per-team injury report (status/comment/date per player),
+# not free text to guess at like the general news feed above.
+ESPN_INJURIES_URL = "https://site.web.api.espn.com/apis/site/v2/sports/football/nfl/injuries"
+_ESPN_ATHLETE_ID_RE = re.compile(r"/id/(\d+)/")
+
+# RotoWire has no separate injury-only feed (confirmed live -- every guessed
+# URL 404s), so its general feed is classified item-by-item instead: these
+# are the words that actually show up on the real injury-report-style
+# headlines/blurbs RotoWire publishes (player status terms, practice-report
+# terms, and the specific body parts that make up the bulk of them).
+_INJURY_KEYWORDS = (
+    "injury report", "injured reserve", "questionable", "doubtful", "ruled out",
+    "placed on ir", "limited participant", "full participant", "did not practice",
+    "dnp", "concussion protocol", "return protocol", "activated from",
+    "designated to return", "pup list", "physically unable", "game-time decision",
+    "shoulder", "hamstring", "ankle", "knee", "quad", "groin", "hip", "back",
+    "wrist", "thumb", "finger", "rib", "oblique", "achilles", "calf", "concussion",
+    "surgery", "mri", "sprain", "strain", "fracture", "soreness", "tightness",
+)
+
+
+def _is_injury_text(headline, body):
+    text = f"{headline} {body or ''}".lower()
+    return any(kw in text for kw in _INJURY_KEYWORDS)
 
 # RotoWire's RSS pubDate isn't valid RFC 822 -- confirmed live (2026-09-08):
 # it's a 12-hour clock with an AM/PM marker and a named US zone abbreviation
@@ -1263,6 +1292,7 @@ def _fetch_rotowire_news():
             "url": (item.findtext("link") or "").strip() or None,
             "published_at": _parse_rotowire_pubdate(item.findtext("pubDate")),
             "name_hint": name_hint.strip(),
+            "is_injury": _is_injury_text(title, description),
         })
     return items
 
@@ -1286,14 +1316,71 @@ def _fetch_espn_news():
         if not article_id or not headline:
             continue
         web = (a.get("links") or {}).get("web") or {}
+        description = (a.get("description") or "").strip()
         items.append({
             "source_id": article_id,
             "headline": headline,
-            "body": (a.get("description") or "").strip(),
+            "body": description,
             "url": web.get("href") if isinstance(web, dict) else None,
             "published_at": _parse_espn_pubdate(a.get("published") or a.get("lastModified")),
             "name_hint": None,
+            "is_injury": _is_injury_text(headline, description),
         })
+    return items
+
+
+def _fetch_espn_injury_report():
+    """ESPN's real structured injury report -- one entry per player per NFL
+    team, with an actual status field (Questionable/Doubtful/Out/Injured
+    Reserve/Suspension/...), not free text to guess at. source_id is built
+    from the team+athlete id rather than trusted from ESPN's own per-entry
+    id, since a status update (Questionable -> Out) needs to land as an
+    update to that same player's row, not a second one, and this entry id's
+    stability across refreshes isn't confirmed."""
+    try:
+        resp = requests.get(ESPN_INJURIES_URL, timeout=20)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception:
+        return []
+
+    items = []
+    for team in data.get("injuries", []):
+        team_id = team.get("id") or ""
+        for inj in team.get("injuries", []):
+            athlete = inj.get("athlete") or {}
+            name = athlete.get("displayName")
+            status = (inj.get("status") or "").strip()
+            if not name or not status:
+                continue
+            links = athlete.get("links") or []
+            athlete_id = web_url = None
+            for link in links:
+                href = link.get("href", "")
+                if athlete_id is None:
+                    m = _ESPN_ATHLETE_ID_RE.search(href)
+                    if m:
+                        athlete_id = m.group(1)
+                if web_url is None and "playercard" in (link.get("rel") or []):
+                    web_url = href
+            if not athlete_id:
+                continue
+            comment = (inj.get("longComment") or inj.get("shortComment") or "").strip()
+            items.append({
+                "source_id": f"{team_id}-{athlete_id}",
+                "headline": f"{name}: {status}",
+                "body": comment if comment.lower() != status.lower() else None,
+                "url": web_url,
+                "published_at": _parse_espn_pubdate(inj.get("date")),
+                "name_hint": name,
+                # Confirmed live (2026-09-08): ESPN keeps a player on this
+                # report with status "Active" once they're actually cleared
+                # (the row often just carries a leftover depth-chart/roster
+                # note, not an injury) -- everything else (Questionable,
+                # Doubtful, Out, Injured Reserve, Suspension, ...) is a real
+                # current designation and belongs in the injury-report filter.
+                "is_injury": status.lower() != "active",
+            })
     return items
 
 
@@ -1302,7 +1389,17 @@ def _fetch_espn_news():
 NEWS_SOURCES = [
     ("RotoWire", _fetch_rotowire_news),
     ("ESPN", _fetch_espn_news),
+    ("ESPN Injury Report", _fetch_espn_injury_report),
 ]
+
+# players_list()'s injury-report filter -- URL param value -> the exact
+# source string it restricts to. RotoWire has no separate injury-only feed,
+# so its filter reads is_injury off the same general-news items; ESPN's
+# injury report is its own structured source (see _fetch_espn_injury_report).
+INJURY_FILTER_SOURCES = {
+    "rotowire": "RotoWire",
+    "espn": "ESPN Injury Report",
+}
 
 
 def _match_news_player_id(item, name_index):
@@ -1336,12 +1433,18 @@ def refresh_player_news(db, force=False):
                 continue
             db.execute(
                 """
-                INSERT INTO player_news (player_id, source, source_id, headline, body, url, published_at, fetched_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT (source, source_id) DO NOTHING
+                INSERT INTO player_news (player_id, source, source_id, headline, body, url, published_at, fetched_at, is_injury)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (source, source_id) DO UPDATE SET
+                    headline = EXCLUDED.headline,
+                    body = EXCLUDED.body,
+                    url = EXCLUDED.url,
+                    published_at = EXCLUDED.published_at,
+                    fetched_at = EXCLUDED.fetched_at,
+                    is_injury = EXCLUDED.is_injury
                 """,
                 (player_id, source, item["source_id"], item["headline"], item.get("body"),
-                 item.get("url"), item.get("published_at"), now),
+                 item.get("url"), item.get("published_at"), now, 1 if item.get("is_injury") else 0),
             )
 
     cutoff = (datetime.now(timezone.utc) - timedelta(days=NEWS_ITEM_MAX_AGE_DAYS)).isoformat()
@@ -1370,6 +1473,10 @@ def _format_news_age(iso_str):
 NEWS_INDICATOR_MAX_AGE_DAYS = 3  # roster/players-list rows only flag genuinely
                                   # recent news with a small badge; the full
                                   # history still lives on the player's own card.
+INJURY_REPORT_MAX_AGE_DAYS = 8  # a real NFL injury designation is "current"
+                                 # for roughly a full practice-report week
+                                 # (Wed through Sunday) even without a fresh
+                                 # headline landing every single day.
 
 
 def get_latest_news_map(db):
@@ -4101,6 +4208,9 @@ def players_list(league_id):
     own_filter = request.args.get("own", "available").lower()
     if own_filter not in ("all", "available", "rostered"):
         own_filter = "available"
+    injury_filter = request.args.get("injury", "").lower()
+    if injury_filter not in INJURY_FILTER_SOURCES:
+        injury_filter = ""
 
     query = "SELECT * FROM players"
     conditions, params = [], []
@@ -4120,12 +4230,25 @@ def players_list(league_id):
     refresh_player_news(db)
     news_map = get_latest_news_map(db)
 
+    injury_player_ids = None
+    if injury_filter:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=INJURY_REPORT_MAX_AGE_DAYS)).isoformat()
+        injury_player_ids = {
+            r["player_id"] for r in db.execute(
+                "SELECT DISTINCT player_id FROM player_news "
+                "WHERE source = ? AND is_injury = 1 AND (published_at IS NULL OR published_at >= ?)",
+                (INJURY_FILTER_SOURCES[injury_filter], cutoff),
+            ).fetchall()
+        }
+
     rows = []
     for p in db.execute(query, params).fetchall():
         is_owned = p["id"] in owned
         if own_filter == "available" and is_owned:
             continue
         if own_filter == "rostered" and not is_owned:
+            continue
+        if injury_player_ids is not None and p["id"] not in injury_player_ids:
             continue
         game = schedule_map.get(p["nfl_team"])
         if game:
@@ -4158,6 +4281,7 @@ def players_list(league_id):
         pos_filter=pos_filter,
         search_query=search_query,
         own_filter=own_filter,
+        injury_filter=injury_filter,
         my_team_id=get_my_team_id(league_id, teams),
     )
 

@@ -11,25 +11,36 @@
       <input type="text" name="q" placeholder="Search players..." value="{{ search_query }}">
       {% if pos_filter %}<input type="hidden" name="pos" value="{{ pos_filter }}">{% endif %}
       <input type="hidden" name="own" value="{{ own_filter }}">
+      {% if injury_filter %}<input type="hidden" name="injury" value="{{ injury_filter }}">{% endif %}
       <button class="btn btn-small" type="submit">Search</button>
     </form>
 
     <div class="pos-tabs">
       <a class="pos-tab {% if own_filter == 'all' %}pos-tab-active{% endif %}"
-         href="{{ url_for('players_list', league_id=league['id'], pos=pos_filter, q=search_query, own='all') }}">All</a>
+         href="{{ url_for('players_list', league_id=league['id'], pos=pos_filter, q=search_query, own='all', injury=injury_filter) }}">All</a>
       <a class="pos-tab {% if own_filter == 'available' %}pos-tab-active{% endif %}"
-         href="{{ url_for('players_list', league_id=league['id'], pos=pos_filter, q=search_query, own='available') }}">Available</a>
+         href="{{ url_for('players_list', league_id=league['id'], pos=pos_filter, q=search_query, own='available', injury=injury_filter) }}">Available</a>
       <a class="pos-tab {% if own_filter == 'rostered' %}pos-tab-active{% endif %}"
-         href="{{ url_for('players_list', league_id=league['id'], pos=pos_filter, q=search_query, own='rostered') }}">On Roster</a>
+         href="{{ url_for('players_list', league_id=league['id'], pos=pos_filter, q=search_query, own='rostered', injury=injury_filter) }}">On Roster</a>
     </div>
 
     <div class="pos-tabs">
       <a class="pos-tab {% if not pos_filter %}pos-tab-active{% endif %}"
-         href="{{ url_for('players_list', league_id=league['id'], q=search_query, own=own_filter) }}">All Pos</a>
+         href="{{ url_for('players_list', league_id=league['id'], q=search_query, own=own_filter, injury=injury_filter) }}">All Pos</a>
       {% for pos in position_order %}
         <a class="pos-tab {% if pos_filter == pos %}pos-tab-active{% endif %}"
-           href="{{ url_for('players_list', league_id=league['id'], pos=pos, q=search_query, own=own_filter) }}">{{ pos }}</a>
+           href="{{ url_for('players_list', league_id=league['id'], pos=pos, q=search_query, own=own_filter, injury=injury_filter) }}">{{ pos }}</a>
       {% endfor %}
+    </div>
+
+    <div class="hint" style="margin:2px 0 6px;">🩹 Injury Report</div>
+    <div class="pos-tabs">
+      <a class="pos-tab {% if not injury_filter %}pos-tab-active{% endif %}"
+         href="{{ url_for('players_list', league_id=league['id'], pos=pos_filter, q=search_query, own=own_filter) }}">All</a>
+      <a class="pos-tab {% if injury_filter == 'rotowire' %}pos-tab-active{% endif %}"
+         href="{{ url_for('players_list', league_id=league['id'], pos=pos_filter, q=search_query, own=own_filter, injury='rotowire') }}">RotoWire</a>
+      <a class="pos-tab {% if injury_filter == 'espn' %}pos-tab-active{% endif %}"
+         href="{{ url_for('players_list', league_id=league['id'], pos=pos_filter, q=search_query, own=own_filter, injury='espn') }}">ESPN</a>
     </div>
 
     <div class="player-table-wrap">
@@ -72,7 +83,10 @@
               </td>
             </tr>
           {% else %}
-            <tr><td colspan="8" class="row-open">No players match.</td></tr>
+            <tr><td colspan="8" class="row-open">
+              {% if injury_filter %}No players currently on the {{ 'RotoWire' if injury_filter == 'rotowire' else 'ESPN' }} injury report{% if pos_filter %} at {{ pos_filter }}{% endif %}.
+              {% else %}No players match.{% endif %}
+            </td></tr>
           {% endfor %}
         </tbody>
       </table>
