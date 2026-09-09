@@ -102,17 +102,17 @@
         {% for p in starters %}
           {% set locked = p['nfl_team'] in locked_teams %}
           <tr class="{% if not p['player_name'] %}row-open{% endif %} {% if is_my_team and p['player_name'] and not locked %}lineup-row{% endif %} {% if is_my_team and not p['player_name'] %}slot-drop-target{% endif %}"
-              {% if is_my_team and p['player_name'] and not locked %}draggable="true" data-pick-id="{{ p['id'] }}"{% endif %}
+              {% if is_my_team and p['player_name'] and not locked %}data-pick-id="{{ p['id'] }}"{% endif %}
               {% if is_my_team and not p['player_name'] %}data-slot-code="{{ p['slot_code'] }}"{% endif %}>
             <td>
-              {% if is_my_team and p['player_name'] and not locked %}<span class="drag-handle">⠿</span>{% endif %}
+              {% if is_my_team and p['player_name'] and not locked %}<span class="drag-handle" title="Drag to move or swap">⠿</span>{% endif %}
               <span class="badge badge-pos">{{ p['slot'] }}</span>
             </td>
             {% if p['player_name'] %}
               <td>{{ macros.player_face(p) }}</td>
               <td class="player-name-cell">
                 <span class="cell-flex">
-                  {{ p['player_name'] }}
+                  <a class="player-name-link" href="{{ url_for('player_profile', league_id=league['id'], player_id=p['player_id']) }}">{{ p['player_name'] }}</a>
                   <span class="badge badge-pos badge-pos-{{ p['position'] }}">{{ p['position'] }}</span>
                   {% if p['injury_label'] %}<span class="badge badge-injury badge-injury-{{ p['injury_label'] }}">{{ p['injury_label'] }}</span>{% endif %}
                   {% if p['news'] %}<span class="badge badge-news" title="{{ p['news']['source'] }} &middot; {{ p['news']['headline'] }}">📰 {{ p['news']['age'] }}</span>{% endif %}
@@ -139,12 +139,12 @@
       <tbody id="bench-body">
         {% for p in bench %}
           {% set locked = p['nfl_team'] in locked_teams %}
-          <tr class="{% if is_my_team and not locked %}lineup-row{% endif %}" {% if is_my_team and not locked %}draggable="true" data-pick-id="{{ p['id'] }}"{% endif %}>
-            <td>{% if is_my_team and not locked %}<span class="drag-handle">⠿</span>{% endif %}</td>
+          <tr class="{% if is_my_team and not locked %}lineup-row{% endif %}" {% if is_my_team and not locked %}data-pick-id="{{ p['id'] }}"{% endif %}>
+            <td>{% if is_my_team and not locked %}<span class="drag-handle" title="Drag to move or swap">⠿</span>{% endif %}</td>
             <td>{{ macros.player_face(p) }}</td>
             <td class="player-name-cell">
               <span class="cell-flex">
-                {{ p['player_name'] }}
+                <a class="player-name-link" href="{{ url_for('player_profile', league_id=league['id'], player_id=p['player_id']) }}">{{ p['player_name'] }}</a>
                 <span class="badge badge-pos badge-pos-{{ p['position'] }}">{{ p['position'] }}</span>
                 {% if p['injury_label'] %}<span class="badge badge-injury badge-injury-{{ p['injury_label'] }}">{{ p['injury_label'] }}</span>{% endif %}
                 {% if p['news'] %}<span class="badge badge-news" title="{{ p['news']['source'] }} &middot; {{ p['news']['headline'] }}">📰 {{ p['news']['age'] }}</span>{% endif %}

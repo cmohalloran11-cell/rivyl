@@ -30,7 +30,20 @@
     sendMove(new URLSearchParams({ pick_a: pickA, target_slot: targetSlot }));
   }
 
+  // Native HTML5 drag-and-drop has no built-in way to say "only start a
+  // drag from this child element" -- draggable="true" makes the whole row
+  // a drag source from a mousedown anywhere in it. So the row starts
+  // non-draggable, and only a mousedown on its own drag-handle (the ⠿
+  // dots) arms it just before the browser's own drag-detection kicks in.
+  // That leaves a plain click/drag anywhere else on the row -- the player
+  // name link included -- to behave like normal content instead of
+  // hijacking the click into a drag.
   document.querySelectorAll('tr.lineup-row').forEach((row) => {
+    const handle = row.querySelector('.drag-handle');
+    if (handle) {
+      handle.addEventListener('mousedown', () => { row.draggable = true; });
+    }
+
     row.addEventListener('dragstart', (e) => {
       dragPickId = row.dataset.pickId;
       row.classList.add('dragging');
@@ -38,7 +51,19 @@
       e.dataTransfer.setData('text/plain', dragPickId);
     });
 
-    row.addEventListener('dragend', clearDragState);
+    row.addEventListener('dragend', () => {
+      row.draggable = false;
+      clearDragState();
+    });
+  });
+
+  // Safety net: a mousedown on the handle with no drag following (a plain
+  // click, or a drag that leaves the window and never fires dragend) would
+  // otherwise leave the row armed -- disarm on any mouseup.
+  document.addEventListener('mouseup', () => {
+    document.querySelectorAll('tr.lineup-row[draggable="true"]').forEach((row) => {
+      row.draggable = false;
+    });
   });
 
   document.querySelectorAll('tr.lineup-row, tr.slot-drop-target').forEach((row) => {
