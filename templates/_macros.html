@@ -63,6 +63,23 @@
   <span class="team-record">{{ team['wins'] }}-{{ team['losses'] }}</span>
 {% endmacro %}
 
+{% macro score_or_proj_cell(p) %}
+  {# Once a player's own game has kicked off (attach_live_points sets
+     live_points), show their real points-so-far as a small bar filling
+     toward their projection instead of the static Proj number -- the proj
+     itself moves into the title tooltip so it's still one hover away. #}
+  {% if p['live_points'] is not none %}
+    <div class="score-cell" title="{{ '%.1f'|format(p['live_points']) }} pts so far{% if p['proj'] %} &middot; {{ '%.1f'|format(p['proj']) }} proj{% endif %}">
+      <span class="score-num stat-num">{{ '%.1f'|format(p['live_points']) }}</span>
+      <div class="score-track">
+        <div class="score-fill{% if p['proj'] and p['live_points'] > p['proj'] %} score-fill-over{% endif %}" style="width: {{ p['live_pct'] }}%;"></div>
+      </div>
+    </div>
+  {% else %}
+    {{ '%.1f'|format(p['proj']) if p['proj'] is not none else '—' }}
+  {% endif %}
+{% endmacro %}
+
 {% macro drop_button(league, team, p, is_my_team) %}
   {% if is_my_team and league['draft_status'] == 'complete' %}
     <form method="post" action="{{ url_for('roster_move', league_id=league['id'], team_id=team['id']) }}"

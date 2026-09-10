@@ -1646,6 +1646,15 @@ input:focus, select:focus, textarea:focus {
 .need-track { flex: 1; height: 6px; background: var(--border); border-radius: 999px; overflow: hidden; }
 .need-fill { height: 100%; background: linear-gradient(90deg, var(--human), #8ab4ff); border-radius: 999px; transition: width 0.3s var(--ease); }
 
+/* Live score bar on a roster/matchup row -- same track/fill idiom as
+   .need-track/.need-fill above, filled by this player's actual points so
+   far as a fraction of their projection (see attach_live_points). */
+.score-cell { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; min-width: 64px; }
+.score-num { font-variant-numeric: tabular-nums; }
+.score-track { width: 100%; height: 5px; background: var(--border); border-radius: 999px; overflow: hidden; }
+.score-fill { height: 100%; background: linear-gradient(90deg, var(--live), #6ee7a8); border-radius: 999px; transition: width 0.3s var(--ease); }
+.score-fill.score-fill-over { background: linear-gradient(90deg, var(--live), var(--gold)); }
+
 .up-next { margin-top: 14px; }
 .up-next ul { margin: 4px 0 0; padding-left: 16px; font-size: 0.8rem; color: var(--text-dim); }
 

@@ -2564,6 +2564,28 @@ def get_player_week_points(db, week, player_id, scoring):
     return row["pts"], row["game_status"]
 
 
+def attach_live_points(rows, db, week, scoring):
+    """Per-player live/actual points for the current week -- the exact same
+    numbers get_team_live_score already sums to get a team's live total,
+    just never surfaced on the individual player row before. live_points
+    stays None (not 0.0) until that player's own game has actually kicked
+    off, so a roster/matchup row can tell "hasn't played yet" apart from
+    "played and scored zero" and fall back to showing Proj alone."""
+    for row in rows:
+        player_id = row.get("player_id")
+        pts, status = (None, None) if not player_id else get_player_week_points(db, week, player_id, scoring)
+        row["live_points"] = pts if status else None
+        row["live_status"] = status
+        proj = row.get("proj")
+        if row["live_points"] is not None and proj:
+            row["live_pct"] = max(0, min(100, round(row["live_points"] / proj * 100)))
+        elif row["live_points"] is not None:
+            row["live_pct"] = 100 if row["live_points"] > 0 else 0
+        else:
+            row["live_pct"] = None
+    return rows
+
+
 def summarize_stat_line(stat_line_json, position):
     """Short human-readable box-score line from the same raw stat dict
     compute_offense_points/compute_def_points score against -- real numbers
@@ -3616,6 +3638,8 @@ def team_detail(league_id, team_id):
         sync_week_scoring(db, league_id, league["current_week"])
         week_status = get_week_status(db, league["current_week"])
         locked_teams = get_locked_teams(db, league["current_week"])
+        if week_status != "scheduled":
+            attach_live_points(starters + bench, db, league["current_week"], league["scoring"])
         m = db.execute(
             """
             SELECT * FROM matchups
@@ -4314,6 +4338,8 @@ def matchup_detail(league_id):
         if right is not None:
             right_starters, _ = build_lineup(db, league_id, right["id"])
             right_starters = with_projections(right_starters, league["scoring"], schedule_map, market_map)
+        if week_status != "scheduled":
+            attach_live_points(left_starters + right_starters, db, league["current_week"], league["scoring"])
 
     return render_template(
         "matchup.html",
@@ -4361,6 +4387,8 @@ def _knockout_matchup_view(db, league, teams, my_team_id):
         left_starters, _ = build_lineup(db, league_id, left["id"])
         left_starters = with_projections(left_starters, league["scoring"], schedule_map, get_market_projection_map(db))
         left_score = get_team_live_score(db, league_id, left["id"], league["current_week"], league["scoring"])
+        if week_status != "scheduled":
+            attach_live_points(left_starters, db, league["current_week"], league["scoring"])
 
         for t in knockout_alive:
             knockout_scores[t["id"]] = get_team_live_score(db, league_id, t["id"], league["current_week"], league["scoring"])
