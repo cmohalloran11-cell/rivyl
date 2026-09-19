@@ -6594,8 +6594,24 @@ def set_optimal_lineup(db, league_id, team_id):
     remaining = []
     locked_slot_codes = set()
     for p in projected:
-        current_slot = p.get("lineup_slot") or "BN"
-        if p.get("nfl_team") in locked_teams:
+        raw_slot = p.get("lineup_slot")
+        current_slot = raw_slot or "BN"
+        # raw_slot is None only for a pick that has NEVER had a real lineup
+        # decision made for it -- straight off the draft (execute_pick_for_team
+        # never touches lineup_slot) or straight onto a roster via trade/waiver
+        # (those explicitly set 'BN', a real decision, distinct from this).
+        # Confirmed live: a brand-new league drafted after the real NFL week
+        # this app's shared nfl_games already has as final -- every player's
+        # own game reads as "already started," so without this exception
+        # every single pick got treated as locked-in-place on its BN default
+        # on the very first optimal-lineup computation, leaving a freshly
+        # drafted team's entire starting lineup empty ("no QB drafted" etc.)
+        # with the whole roster shown locked and undraggable. There is no
+        # real prior lineup choice to protect for a pick that's never had
+        # one, so it stays eligible for a starting slot regardless of lock
+        # status; once any real assignment exists (even BN), subsequent
+        # re-optimizations correctly respect the lock as before.
+        if raw_slot is not None and p.get("nfl_team") in locked_teams:
             assignments.append((p["id"], current_slot))
             if current_slot != "BN":
                 locked_slot_codes.add(current_slot)

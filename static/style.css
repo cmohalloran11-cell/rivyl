@@ -9,7 +9,9 @@
   --border-bright: #363a5c;
   --text: #f5f5fb;
   --text-dim: #9498b8;
-  --text-faint: #63678a;
+  --text-faint: #7d82ab; /* was #63678a -- measured ~3.4:1 on --bg-elevated,
+                             under WCAG AA's 4.5:1 floor for the small text
+                             (badges, hints, timestamps) it's used for */
 
   --accent: #7c3aed;
   --accent-strong: #c084fc;
@@ -341,7 +343,20 @@ button, .btn, .btn-small, input, select {
   }
   .league-tab-active::before { left: 20%; right: 20%; top: -6px; bottom: auto; width: auto; height: 3px; border-radius: 3px 3px 0 0; }
   .league-tab-icon { font-size: 1.1rem; }
-  body { padding-bottom: 70px; }
+
+  /* Account-level pages (Notifications, Settings, your Profile) and the
+     draft room never override league_nav -- base.html's <nav class=
+     "league-tabs"> block still renders (with just template whitespace
+     inside, so :empty doesn't catch it), which on desktop collapses to
+     nothing but on mobile turns into this real fixed/bordered/blurred
+     bottom bar with zero tabs in it, plus 70px of body padding reserved
+     to clear it. Both rules below key off real .league-tab children
+     (immune to that whitespace) so the bar and its padding only exist
+     when there's something in it. (Confirmed live: a body:has() nesting
+     a second :has()/:not() inside it silently failed to match at all --
+     kept both rules to one level of :has() each.) */
+  .league-tabs:not(:has(.league-tab)) { display: none; }
+  body:has(.league-tab) { padding-bottom: 70px; }
 
   /* The base .teams-table rule (below this media query in the cascade)
      already sets display:block + overflow-x:auto at every width -- this
